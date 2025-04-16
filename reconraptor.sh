@@ -39,14 +39,46 @@ recon() {
     subfinder -d $1 -silent > subdomains.txt
 
     echo -e "${GREEN}🌐 Checking live domains...${RESET}"
-    cat subdomains.txt | httpx -silent -mc 200 > live.txt
+    cat subdomains.txt | httpx -silent -mc 200 > authsubs.txt
+
+    echo -e "${GREEN}🌐 Checking domains which are not live...${RESET}"
+    cat subdomains.txt | httpx -silent -mc 400,401,402,403,404 > unauthsubs.txt
+    
+    subfile="authsubs.txt"
+    LINE_COUNT=$(wc -l < "authsubs.txt")
+    if [ "$LINE_COUNT" -gt 20 ]; then
+        echo -e "${RED}📁 $1 has alot of subdomains so the whole recon may take time, please keep paitents or else don't have a check up......${RESET}"
+    else
+        echo -e "${RED}📁 $1 has Fewer Subdomains so it can be quick enjoy.......... ${RESET}"
+    fi
+
+    echo .
 
     echo -e "${GREEN}📜 Fetching waybackurls...${RESET}"
-    cat live.txt | waybackurls > urls.txt
+    cat authsubs.txt | waybackurls > urls.txt
+
+    subfile="unauthsubs.txt"
+    LINE_COUNT=$(wc -l < "unauthsubs.txt")
+    if [ "$LINE_COUNT" -gt 20 ]; then
+        echo -e "${RED}📁 $1 has alot of subdomains so the whole recon may take time, please keep paitents or else don't have a check up......${RESET}"
+    else
+        echo -e "${RED}📁 $1 has Fewer Subdomains so it can be quick enjoy.......... ${RESET}"
+    fi
+
+    echo .
+
+    echo -e "${GREEN}📜 Fetching waybackurls...${RESET}"
+    cat unauthsubs.txt | waybackurls >> urls.txt
 
     echo -e "${GREEN}📁 Extracting JS & JSON files...${RESET}"
     grep -E "\.js$" urls.txt > js_files.txt
     grep -E "\.json$" urls.txt > json_files.txt
+    echo -e "${RED}📁 You are almost there...${RESET}"
+    echo .
+    echo -e "${GREEN}📁 Validating the JS & JSON files...${RESET}" 
+
+    cat js_files.txt | httpx -silent -mc 200 > authjs_files.txt
+    cat json_files.txt | httpx -silent -mc 200 > authjson_files.txt
 
     echo -e "${CYAN}✅ Recon Complete. Results in recon_$1 directory.${RESET}"
 }
