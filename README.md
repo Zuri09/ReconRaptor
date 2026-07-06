@@ -1,99 +1,133 @@
-# 🚀 ReconRaptor
+# ReconRaptor
 
-A badass, no-nonsense, emoji-powered, subdomain-destroying, URL-digging recon tool for bug bounty hunters! 😎
+ReconRaptor is a Bash-based reconnaissance helper for bug bounty and authorized security testing. It collects subdomains, validates live hosts, gathers archived URLs, extracts JavaScript and JSON assets, and highlights possible secrets or information-disclosure indicators.
 
-## 🌟 Features
+The tool is designed to produce practical files you can review quickly after a scan instead of leaving everything mixed together in one large output.
 
-- 🔍 Subdomain discovery using `subfinder`
-- 🌐 Live domain detection using `httpx`
-- 📜 Historical URL collection using `waybackurls`
-- 📁 Auto-categorization of `.js` and `.json` files
-- 📦 Zips your recon results
-- 📤 Optional Discord Webhook support to send zipped report
-- 🎨 Pretty CLI output with emojis and banners
+## Features
 
----
+- Subdomain discovery with `subfinder`
+- Live and non-live host classification with `httpx`
+- Historical URL collection with `waybackurls`
+- JavaScript and JSON URL extraction, including URLs with query strings
+- URL-based information-disclosure checks
+- JavaScript download and analysis
+- Separate reports for generic API key candidates, higher-confidence leaks, Gitleaks findings, and JS vulnerability indicators
+- Optional Discord webhook upload for zipped results
+- Cleaner CLI output with scan sections and a final summary
 
-## ⚙️ Installation
+## Installation
 
-Use the provided installer script:
+Run the installer:
 
 ```bash
 chmod +x install.sh
 ./install.sh
 ```
 
-This will:
-- 🔎 Check for Go and install if missing
-- 🧰 Install required tools: `subfinder`, `httpx`, `waybackurls`
-- 🦖 Place `reconraptor.sh` in your PATH for global usage
+The installer checks for Go and installs:
 
----
+- `subfinder`
+- `httpx`
+- `waybackurls`
+- `gitleaks`
 
-## 🧪 Usage
+If any installed Go tool is not found after restarting your terminal, add this to your shell profile:
 
 ```bash
-reconraptor -d example.com
+export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
-You will be prompted whether to send results to Discord webhook.
-> Save your webhook in a file named `webhook.conf` in the same directory (optional).
+## Usage
 
----
+Run a scan:
 
-## 📁 Output Structure
-
+```bash
+./reconraptor.sh -d example.com
 ```
-bugbounty_example.com/
+
+Send results to a Discord webhook:
+
+```bash
+./reconraptor.sh -d example.com -w "https://discord.com/api/webhooks/..."
+```
+
+## Output Structure
+
+ReconRaptor creates a target-specific directory:
+
+```text
+recon_example.com/
 ├── subdomains.txt
-├── live_subdomains.txt
-├── all_urls.txt
+├── authsubs.txt
+├── unauthsubs.txt
+├── urls.txt
 ├── js_files.txt
 ├── json_files.txt
-└── results_example.com.zip
+├── authjs_files.txt
+├── authjson_files.txt
+├── url_info_disclosure.txt
+├── url_regex_dictionary.txt
+├── downloaded_js/
+├── downloaded_js_map.txt
+├── generic_api_keys.txt
+├── genuine_leaks.txt
+├── gitleaks_report.json
+├── js_vulnerability_findings.txt
+├── js_regex_dictionary.txt
+└── js_secret_summary.txt
 ```
 
----
+## URL Exposure Analysis
 
-## 💌 Webhook Support
+`url_info_disclosure.txt` flags possible findings directly from collected URLs, including:
 
-If you provide a `webhook.conf` file, ReconRaptor will ask to send your zipped results to the webhook. Otherwise, it will skip this step.
+- Environment and configuration files
+- Backup, archive, and database dump files
+- Credentials or tokens in query strings
+- Private keys and certificate files
+- Source maps
+- Logs, debug paths, profiler paths, and server status pages
+- Swagger, OpenAPI, GraphQL, and API documentation endpoints
+- Admin, internal, dev, staging, and test paths
+- Possible open redirect parameters
+- Export, download, and document paths
+- Version-control and dependency metadata
 
----
+## JavaScript Analysis
 
-## 📦 Update
+ReconRaptor downloads live JavaScript files into `downloaded_js/` and analyzes them with Gitleaks when available. It also runs built-in regex checks.
 
-To update the tool and its dependencies:
+Reports are separated by confidence and purpose:
+
+- `generic_api_keys.txt`: broad API key and token candidates
+- `genuine_leaks.txt`: higher-confidence built-in leak matches
+- `gitleaks_report.json`: Gitleaks JSON output
+- `js_vulnerability_findings.txt`: client-side vulnerability indicators
+- `js_regex_dictionary.txt`: regex patterns used by the JS scanner
+- `js_secret_summary.txt`: summary counts and report references
+
+The JS vulnerability scan looks for indicators such as DOM XSS sinks and sources, client-side redirects, sensitive browser storage, source map references, exposed API/admin/debug paths, prototype pollution clues, insecure transport, and internal host references.
+
+## Updating Tools
+
+To update dependencies manually:
 
 ```bash
 go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install -v github.com/tomnomnom/waybackurls@latest
+go install -v github.com/zricethezav/gitleaks/v8@latest
 ```
 
----
+## Responsible Use
 
-## 📜 License
+Use ReconRaptor only on targets you own or are explicitly authorized to test. Findings from regex-based scanners are indicators and should be manually validated before reporting.
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## License
 
----
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
-## 👨‍💻 Author
+## Author
 
-Crafted with ❤️ by [Zuri](https://github.com/Zuri09)
-
----
-
-## 💬 Contribute
-
-Pull requests are welcome. Feel free to fork and raise issues!
-
----
-
-## 🤝 Disclaimer
-
-This tool is for educational purposes only. Use responsibly and ethically.
-
-Happy hacking! 🐱‍💻🚀
-
+Created by [Zuri](https://github.com/Zuri09).
