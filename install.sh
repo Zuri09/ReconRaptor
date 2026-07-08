@@ -38,14 +38,15 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 
 # Install tools
-echo "[*] Installing subfinder, httpx, waybackurls, and gitleaks..."
+echo "[*] Installing subfinder, httpx, katana, waybackurls, and gitleaks..."
 go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+go install -v github.com/projectdiscovery/katana/cmd/katana@latest
 go install -v github.com/tomnomnom/waybackurls@latest
 go install -v github.com/zricethezav/gitleaks/v8@latest
 
 echo "[*] Verifying installed tools..."
-for tool in subfinder httpx waybackurls gitleaks; do
+for tool in subfinder httpx katana waybackurls gitleaks; do
     if command_exists "$tool"; then
         echo "[OK] $tool installed"
     else

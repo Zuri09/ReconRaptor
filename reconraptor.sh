@@ -10,6 +10,7 @@ BLUE="${ESC}[34m"
 BOLD="${ESC}[1m"
 DIM="${ESC}[2m"
 RESET="${ESC}[0m"
+MAX_MATCHES_PER_PATTERN=50
 
 info() {
     printf '%b%s%b\n' "$1" "$2" "$RESET"
@@ -64,7 +65,7 @@ printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Discord reports" "$
 
 # Requirements check
 check_installed() {
-    for tool in subfinder httpx waybackurls curl; do
+    for tool in subfinder httpx waybackurls katana curl; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             fail "$tool is not installed. Please run ./install.sh"
             exit 1
@@ -102,17 +103,17 @@ download_js_files() {
 
 scan_js_secrets() {
     out_dir="downloaded_js"
-    generic_file="generic_api_keys.txt"
-    genuine_file="genuine_leaks.txt"
+    generic_file="generic_api_keys.json"
+    genuine_file="genuine_leaks.json"
     gitleaks_file="gitleaks_report.json"
-    vuln_file="js_vulnerability_findings.txt"
+    vuln_file="js_vulnerability_findings.json"
     dictionary_file="js_regex_dictionary.txt"
     summary_file="js_secret_summary.txt"
 
-    : > "$generic_file"
-    : > "$genuine_file"
+    init_json_report "$generic_file"
+    init_json_report "$genuine_file"
     : > "$gitleaks_file"
-    : > "$vuln_file"
+    init_json_report "$vuln_file"
     : > "$summary_file"
     write_js_regex_dictionary "$dictionary_file"
 
@@ -162,11 +163,15 @@ scan_js_secrets() {
         scan_pattern "$vuln_file" "$js_file" "$js_url" "SSRF/internal host indicator" '(localhost|127\.0\.0\.1|0\.0\.0\.0|169\.254\.169\.254|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[0-9]+)'
     done < downloaded_js_map.txt
 
+    close_json_report "$generic_file"
+    close_json_report "$genuine_file"
+    close_json_report "$vuln_file"
+
     {
-        printf 'Generic API key candidates: %s\n' "$(count_lines "$generic_file")"
-        printf 'High-confidence leaks: %s\n' "$(count_lines "$genuine_file")"
+        printf 'Generic API key candidates: %s\n' "$(count_json_findings "$generic_file")"
+        printf 'High-confidence leaks: %s\n' "$(count_json_findings "$genuine_file")"
         printf 'Gitleaks JSON report: %s\n' "$gitleaks_file"
-        printf 'JS vulnerability indicators: %s\n' "$(count_lines "$vuln_file")"
+        printf 'JS vulnerability indicators: %s\n' "$(count_json_findings "$vuln_file")"
         printf 'Regex dictionary: %s\n' "$dictionary_file"
     } >> "$summary_file"
 
@@ -182,9 +187,82 @@ scan_pattern() {
     label="$4"
     pattern="$5"
 
-    grep -Eain "$pattern" "$js_file" | while IFS= read -r match_line; do
-        printf '[%s] %s | %s:%s\n' "$label" "$js_url" "$js_file" "$match_line" >> "$output_file"
+    grep -Eaino -- "$pattern" "$js_file" | head -n "$MAX_MATCHES_PER_PATTERN" | while IFS= read -r match_line; do
+        line_no="${match_line%%:*}"
+        match_value="${match_line#*:}"
+        append_json_finding "$output_file" "$label" "$js_url" "$js_file" "$line_no" "$match_value"
     done
+}
+
+init_json_report() {
+    printf '[\n' > "$1"
+}
+
+close_json_report() {
+    printf '\n]\n' >> "$1"
+}
+
+append_json_finding() {
+    output_file="$1"
+    finding_type="$2"
+    source_url="$3"
+    local_file="$4"
+    line_no="$5"
+    match_value="$6"
+    redacted_match="$match_value"
+    match_length=$(printf '%s' "$match_value" | wc -c | tr -d ' ')
+    match_hash=$(hash_match "$match_value")
+
+    if [ "$(wc -c < "$output_file" | tr -d ' ')" -gt 2 ]; then
+        printf ',\n' >> "$output_file"
+    fi
+
+    printf '  {\n' >> "$output_file"
+    printf '    "type": "%s",\n' "$(json_escape "$finding_type")" >> "$output_file"
+    printf '    "source_url": "%s",\n' "$(json_escape "$source_url")" >> "$output_file"
+    printf '    "file": "%s",\n' "$(json_escape "$local_file")" >> "$output_file"
+    printf '    "line": %s,\n' "$line_no" >> "$output_file"
+    printf '    "match_length": %s,\n' "$match_length" >> "$output_file"
+    printf '    "match_sha256": "%s",\n' "$match_hash" >> "$output_file"
+    printf '    "match": "%s"\n' "$(json_escape "$redacted_match")" >> "$output_file"
+    printf '  }' >> "$output_file"
+}
+
+hash_match() {
+    if command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | awk '{print $1}'
+    else
+        printf '%s' "$1" | cksum | awk '{print $1}'
+    fi
+}
+
+redact_match() {
+    awk '
+    {
+        if (length($0) <= 16) {
+            print "$0"
+        } else {
+            print "$0"
+        }
+    }' << EOF
+$1
+EOF
+}
+
+json_escape() {
+    awk '
+    {
+        gsub(/\\/,"\\\\")
+        gsub(/"/,"\\\"")
+        gsub(/\t/,"\\t")
+        gsub(/\r/,"\\r")
+        gsub(/\n/,"\\n")
+        printf "%s", $0
+    }' << EOF
+$1
+EOF
 }
 
 write_js_regex_dictionary() {
@@ -252,13 +330,93 @@ scan_url_info_disclosure() {
     fi
 }
 
+scan_smart_url_findings() {
+    urls_file="$1"
+    sensitive_file="smart_sensitive_files.json"
+    secret_file="smart_secret_urls.json"
+    dictionary_file="smart_url_filter_dictionary.txt"
+
+    init_json_report "$sensitive_file"
+    init_json_report "$secret_file"
+    write_smart_url_filter_dictionary "$dictionary_file"
+
+    if [ ! -s "$urls_file" ]; then
+        warn "No URLs available for smart URL filtering."
+        close_json_report "$sensitive_file"
+        close_json_report "$secret_file"
+        return
+    fi
+
+    step "Running smart URL filter for sensitive files and secret patterns"
+    while IFS= read -r url; do
+        [ -z "$url" ] && continue
+
+        scan_smart_url_pattern "$sensitive_file" "$url" "Sensitive file extension" '\.(zip|rar|tar|gz|tgz|7z|config|conf|ini|log|bak|backup|old|orig|save|swp|java|xlsx?|json|pdf|docx?|pptx|csv|htaccess|env|sql|db|sqlite|pem|key|p12|pfx)([?#].*)?$'
+        scan_smart_url_pattern "$sensitive_file" "$url" "Sensitive path keyword" '/(backup|backups|dump|dumps|export|exports|download|downloads|logs?|debug|config|configs|private|internal|admin|staging|dev|test|qa)(/|$|[?#])'
+
+        scan_smart_url_pattern "$secret_file" "$url" "Secret keyword in URL" '(access[_-]?key|access[_-]?token|admin[_-]?(pass|user)|algolia[_-]?(admin[_-]?key|api[_-]?key)|api[_-]?(key|secret)|apikey|apiSecret|app[_-]?(debug|id|key|secret)|auth[_-]?(token|secret)|authorizationToken|aws[_-]?(access|access[_-]?key[_-]?id|bucket|key|secret|secret[_-]?key|token)|AWSSecretKey|client[_-]?secret|cloudflare[_-]?(api[_-]?key|auth[_-]?key)|cloudinary[_-]?api[_-]?secret|connectionstring|consumer[_-]?(key|secret)|credentials|database[_-]?(password|username)|db[_-]?(password|passwd|user|username)|deploy[_-]?password|docker[_-]?(key|pass|passwd|password)|encryption[_-]?(key|password)|firebase|googlemaps|AIza|jwt|private[_-]?key|secret|token)'
+        scan_smart_url_pattern "$secret_file" "$url" "Secret value in query string" '([?&](access[_-]?key|access[_-]?token|api[_-]?key|apikey|apiSecret|api[_-]?secret|app[_-]?key|app[_-]?secret|auth[_-]?token|client[_-]?secret|password|passwd|pwd|secret|token|jwt|session|sid)=([^&#]{8,}))'
+        scan_smart_url_pattern "$secret_file" "$url" "Cloud or SaaS secret indicator" '(amazonaws|appspot|cloudfront|firebaseio|storage\.googleapis\.com|supabase\.co|blob\.core\.windows\.net|s3\.amazonaws\.com|cloudinary|sendgrid|mailgun|twilio|stripe|slack|discord|github|gitlab|datadog|newrelic|sentry)'
+    done < "$urls_file"
+
+    close_json_report "$sensitive_file"
+    close_json_report "$secret_file"
+
+    success "Smart sensitive file URLs saved to $sensitive_file"
+    success "Smart secret URL patterns saved to $secret_file"
+}
+
+scan_smart_url_pattern() {
+    output_file="$1"
+    url="$2"
+    label="$3"
+    pattern="$4"
+
+    printf '%s\n' "$url" | grep -Eio -- "$pattern" | head -n "$MAX_MATCHES_PER_PATTERN" | while IFS= read -r match_value; do
+        append_url_json_finding "$output_file" "$label" "$url" "$match_value"
+    done
+}
+
+append_url_json_finding() {
+    output_file="$1"
+    finding_type="$2"
+    source_url="$3"
+    match_value="$4"
+    match_length=$(printf '%s' "$match_value" | wc -c | tr -d ' ')
+    match_hash=$(hash_match "$match_value")
+
+    if [ "$(wc -c < "$output_file" | tr -d ' ')" -gt 2 ]; then
+        printf ',\n' >> "$output_file"
+    fi
+
+    printf '  {\n' >> "$output_file"
+    printf '    "type": "%s",\n' "$(json_escape "$finding_type")" >> "$output_file"
+    printf '    "source_url": "%s",\n' "$(json_escape "$source_url")" >> "$output_file"
+    printf '    "match_length": %s,\n' "$match_length" >> "$output_file"
+    printf '    "match_sha256": "%s",\n' "$match_hash" >> "$output_file"
+    printf '    "match": "%s"\n' "$(json_escape "$match_value")" >> "$output_file"
+    printf '  }' >> "$output_file"
+}
+
+write_smart_url_filter_dictionary() {
+    dictionary_file="$1"
+
+    cat > "$dictionary_file" << "EOF"
+Sensitive file extension | \.(zip|rar|tar|gz|tgz|7z|config|conf|ini|log|bak|backup|old|orig|save|swp|java|xlsx?|json|pdf|docx?|pptx|csv|htaccess|env|sql|db|sqlite|pem|key|p12|pfx)([?#].*)?$
+Sensitive path keyword | /(backup|backups|dump|dumps|export|exports|download|downloads|logs?|debug|config|configs|private|internal|admin|staging|dev|test|qa)(/|$|[?#])
+Secret keyword in URL | access_key, access_token, admin_pass, api_key, api_secret, app_secret, auth_token, aws_secret_key, client_secret, cloudflare_api_key, database_password, db_password, encryption_key, private_key, token, jwt, and related real-world names
+Secret value in query string | [?&](access_key|access_token|api_key|apikey|apiSecret|api_secret|app_key|app_secret|auth_token|client_secret|password|passwd|pwd|secret|token|jwt|session|sid)=value
+Cloud or SaaS secret indicator | amazonaws, appspot, cloudfront, firebaseio, storage.googleapis.com, supabase.co, Azure Blob, Cloudinary, SendGrid, Mailgun, Twilio, Stripe, Slack, Discord, GitHub, GitLab, Datadog, New Relic, Sentry
+EOF
+}
+
 scan_url_pattern() {
     output_file="$1"
     url="$2"
     label="$3"
     pattern="$4"
 
-    printf '%s\n' "$url" | grep -Eiq "$pattern" && printf '[%s] %s\n' "$label" "$url" >> "$output_file"
+    printf '%s\n' "$url" | grep -Eiq -- "$pattern" && printf '[%s] %s\n' "$label" "$url" >> "$output_file"
 }
 
 write_url_regex_dictionary() {
@@ -287,6 +445,14 @@ count_lines() {
     fi
 }
 
+count_json_findings() {
+    if [ -f "$1" ]; then
+        grep -c '"type":' "$1"
+    else
+        printf '0'
+    fi
+}
+
 print_summary() {
     domain="$1"
 
@@ -297,20 +463,25 @@ print_summary() {
     stat_line "Non-live hosts" "$(count_lines unauthsubs.txt)"
     stat_line "URLs collected" "$(count_lines urls.txt)"
     stat_line "URL disclosures" "$(count_lines url_info_disclosure.txt)"
+    stat_line "Smart files" "$(count_json_findings smart_sensitive_files.json)"
+    stat_line "Smart URL secrets" "$(count_json_findings smart_secret_urls.json)"
     stat_line "Live JS files" "$(count_lines authjs_files.txt)"
     stat_line "Live JSON files" "$(count_lines authjson_files.txt)"
-    stat_line "Generic API keys" "$(count_lines generic_api_keys.txt)"
-    stat_line "Genuine leaks" "$(count_lines genuine_leaks.txt)"
-    stat_line "JS vuln indicators" "$(count_lines js_vulnerability_findings.txt)"
+    stat_line "Generic API keys" "$(count_json_findings generic_api_keys.json)"
+    stat_line "Genuine leaks" "$(count_json_findings genuine_leaks.json)"
+    stat_line "JS vuln indicators" "$(count_json_findings js_vulnerability_findings.json)"
 
     printf '\n%b%s%b\n' "$BOLD" "Result files" "$RESET"
     stat_line "Directory" "recon_$domain"
     stat_line "URL disclosures" "url_info_disclosure.txt"
     stat_line "URL dictionary" "url_regex_dictionary.txt"
-    stat_line "Generic keys" "generic_api_keys.txt"
-    stat_line "Genuine leaks" "genuine_leaks.txt"
+    stat_line "Smart files" "smart_sensitive_files.json"
+    stat_line "Smart URL secrets" "smart_secret_urls.json"
+    stat_line "Smart dictionary" "smart_url_filter_dictionary.txt"
+    stat_line "Generic keys" "generic_api_keys.json"
+    stat_line "Genuine leaks" "genuine_leaks.json"
     stat_line "Gitleaks JSON" "gitleaks_report.json"
-    stat_line "JS vulns" "js_vulnerability_findings.txt"
+    stat_line "JS vulns" "js_vulnerability_findings.json"
     stat_line "Regex dictionary" "js_regex_dictionary.txt"
     stat_line "JS map" "downloaded_js_map.txt"
     stat_line "Summary" "js_secret_summary.txt"
@@ -346,6 +517,9 @@ recon() {
     step "Fetching wayback URLs from live domains"
     cat authsubs.txt | waybackurls > urls.txt
 
+    step "Crawling live domains with katana"
+    katana -list authsubs.txt -silent >> urls.txt
+
     LINE_COUNT=$(wc -l < "unauthsubs.txt")
     if [ "$LINE_COUNT" -gt 20 ]; then
         warn "$1 has many non-live domains; archived URL collection can take time."
@@ -355,10 +529,12 @@ recon() {
 
     step "Fetching wayback URLs from non-live domains"
     cat unauthsubs.txt | waybackurls >> urls.txt
-    success "Saved $(count_lines urls.txt) URLs to urls.txt"
+    sort -u urls.txt -o urls.txt
+    success "Saved $(count_lines urls.txt) unique URLs to urls.txt"
 
     section "URL Exposure Analysis"
     scan_url_info_disclosure "urls.txt"
+    scan_smart_url_findings "urls.txt"
 
     section "Asset Extraction"
     step "Extracting JS and JSON URLs"
@@ -382,10 +558,28 @@ recon() {
 
 # Discord Upload
 upload_discord() {
+    result_dir="recon_$1"
+    zip_file="results_$1.zip"
+
     section "Discord Upload"
-    step "Uploading results to Discord"
-    zip -r "results_$1.zip" "recon_$1/"
-    curl -X POST -F "file=@results_$1.zip" -F "payload_json={\"content\":\"ReconRaptor Scan Report for *$1*\"}" "$2"
+    if [ ! -d "$result_dir" ]; then
+        fail "Result directory $result_dir was not found. Discord upload skipped."
+        return 1
+    fi
+
+    step "Compressing $result_dir"
+    zip -qr "$zip_file" "$result_dir"
+
+    step "Uploading $zip_file to Discord"
+    if curl -fsS -X POST \
+        -F "file=@$zip_file;type=application/zip" \
+        -F "payload_json={\"content\":\"ReconRaptor scan report for $1\"}" \
+        "$2" >/dev/null; then
+        success "Discord upload complete."
+    else
+        fail "Discord upload failed. Check the webhook URL and network connection."
+        return 1
+    fi
 }
 
 # Args parsing
@@ -412,7 +606,9 @@ if [ -t 1 ]; then
 fi
 banner
 check_installed
+start_dir=$(pwd)
 recon "$domain"
+cd "$start_dir" || exit 1
 
 if [ -n "$webhook" ]; then
     upload_discord "$domain" "$webhook"
