@@ -7,9 +7,12 @@ The tool is designed to produce practical files you can review quickly after a s
 ## Features
 
 - Subdomain discovery with `subfinder`
+- DNS resolution with `dnsx`
 - Live and non-live host classification with `httpx`
 - Historical URL collection with `waybackurls`
 - Live URL crawling with `katana`
+- Vulnerability checks with `nuclei`
+- TLS metadata collection with `tlsx`
 - JavaScript and JSON URL extraction, including URLs with query strings
 - URL-based information-disclosure checks
 - Smart URL filtering for sensitive files and secret-looking URL patterns
@@ -30,8 +33,11 @@ chmod +x install.sh
 The installer checks for Go and installs:
 
 - `subfinder`
+- `dnsx`
 - `httpx`
 - `katana`
+- `nuclei`
+- `tlsx`
 - `waybackurls`
 - `gitleaks`
 
@@ -63,27 +69,35 @@ ReconRaptor creates a target-specific directory:
 
 ```text
 recon_example.com/
-├── subdomains.txt
-├── authsubs.txt
-├── unauthsubs.txt
-├── urls.txt
-├── js_files.txt
-├── json_files.txt
-├── authjs_files.txt
-├── authjson_files.txt
-├── url_info_disclosure.txt
-├── url_regex_dictionary.txt
-├── smart_sensitive_files.json
-├── smart_secret_urls.json
-├── smart_url_filter_dictionary.txt
-├── downloaded_js/
-├── downloaded_js_map.txt
-├── generic_api_keys.json
-├── genuine_leaks.json
-├── gitleaks_report.json
-├── js_vulnerability_findings.json
-├── js_regex_dictionary.txt
-└── js_secret_summary.txt
+├── raw/
+│   ├── subdomains.txt
+│   ├── resolved_subdomains.txt
+│   ├── authsubs.txt
+│   ├── unauthsubs.txt
+│   ├── urls.txt
+│   ├── js_files.txt
+│   ├── json_files.txt
+│   ├── authjs_files.txt
+│   └── authjson_files.txt
+├── reports/
+│   ├── url_info_disclosure.txt
+│   ├── url_regex_dictionary.txt
+│   ├── smart_sensitive_files.json
+│   ├── smart_secret_urls.json
+│   ├── smart_url_filter_dictionary.txt
+│   ├── potential_vuln_urls.txt
+│   ├── generic_api_keys.json
+│   ├── genuine_leaks.json
+│   ├── gitleaks_report.json
+│   ├── js_vulnerability_findings.json
+│   ├── nuclei_findings.jsonl
+│   ├── nuclei_potential_url_findings.jsonl
+│   ├── tls_findings.jsonl
+│   ├── js_regex_dictionary.txt
+│   └── js_secret_summary.txt
+└── evidence/
+    ├── downloaded_js/
+    └── downloaded_js_map.txt
 ```
 
 ## URL Exposure Analysis
@@ -106,6 +120,8 @@ recon_example.com/
 
 `smart_secret_urls.json` stores the matched URL fragment so query-string evidence can be reviewed directly from the report.
 
+`potential_vuln_urls.txt` deduplicates URLs matched by the smart filter. ReconRaptor uses this list for a focused Nuclei pass.
+
 ## JavaScript Analysis
 
 ReconRaptor downloads live JavaScript files into `downloaded_js/` and analyzes them with Gitleaks when available. It also runs built-in regex checks.
@@ -123,14 +139,27 @@ Built-in JS findings are written as compact JSON objects with `type`, `source_ur
 
 The JS vulnerability scan looks for indicators such as DOM XSS sinks and sources, client-side redirects, sensitive browser storage, source map references, exposed API/admin/debug paths, prototype pollution clues, insecure transport, and internal host references.
 
+## ProjectDiscovery Checks
+
+ReconRaptor runs two additional ProjectDiscovery checks after URL and JavaScript analysis:
+
+- `nuclei_findings.jsonl`: Nuclei findings for low, medium, high, and critical severity templates, with raw request/response output omitted.
+- `nuclei_potential_url_findings.jsonl`: Nuclei findings from the focused scan against `potential_vuln_urls.txt`.
+- `tls_findings.jsonl`: TLS metadata from `tlsx` for live hosts.
+
+These checks are intended to surface likely vulnerabilities and useful attack-surface metadata, similar to the validation phase in larger recon frameworks. Always review findings manually before reporting.
+
 ## Updating Tools
 
 To update dependencies manually:
 
 ```bash
 go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+go install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest
 go install -v github.com/tomnomnom/waybackurls@latest
 go install -v github.com/zricethezav/gitleaks/v8@latest
 ```

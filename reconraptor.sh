@@ -60,17 +60,55 @@ cat << "EOF"
 
 EOF
 printf '%b' "$RESET"
-printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Discord reports" "$RESET"
+printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Vuln checks | Discord reports" "$RESET"
 }
 
 # Requirements check
 check_installed() {
-    for tool in subfinder httpx waybackurls katana curl; do
+    for tool in subfinder dnsx httpx waybackurls katana nuclei tlsx curl; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             fail "$tool is not installed. Please run ./install.sh"
             exit 1
         fi
     done
+}
+
+run_projectdiscovery_checks() {
+    nuclei_file="nuclei_findings.jsonl"
+    nuclei_potential_file="nuclei_potential_url_findings.jsonl"
+    tls_file="tls_findings.jsonl"
+
+    : > "$nuclei_file"
+    : > "$nuclei_potential_file"
+    : > "$tls_file"
+
+    if [ ! -s "authsubs.txt" ]; then
+        warn "No live hosts available for ProjectDiscovery checks."
+        return
+    fi
+
+    step "Running nuclei safe vulnerability checks"
+    nuclei -l authsubs.txt \
+        -severity low,medium,high,critical \
+        -jsonl \
+        -omit-raw \
+        -silent \
+        -o "$nuclei_file" >/dev/null 2>&1 || warn "nuclei completed with findings or warnings."
+
+    if [ -s "potential_vuln_urls.txt" ]; then
+        step "Running nuclei checks against high-signal URLs"
+        nuclei -l potential_vuln_urls.txt \
+            -severity low,medium,high,critical \
+            -jsonl \
+            -omit-raw \
+            -silent \
+            -o "$nuclei_potential_file" >/dev/null 2>&1 || warn "nuclei potential URL scan completed with findings or warnings."
+    fi
+
+    step "Collecting TLS metadata with tlsx"
+    sed 's#^https\?://##' authsubs.txt | tlsx -json -silent > "$tls_file" 2>/dev/null || warn "tlsx completed with warnings."
+
+    success "ProjectDiscovery checks saved to $nuclei_file and $tls_file"
 }
 
 download_js_files() {
@@ -334,10 +372,12 @@ scan_smart_url_findings() {
     urls_file="$1"
     sensitive_file="smart_sensitive_files.json"
     secret_file="smart_secret_urls.json"
+    potential_file="potential_vuln_urls.txt"
     dictionary_file="smart_url_filter_dictionary.txt"
 
     init_json_report "$sensitive_file"
     init_json_report "$secret_file"
+    : > "$potential_file"
     write_smart_url_filter_dictionary "$dictionary_file"
 
     if [ ! -s "$urls_file" ]; then
@@ -361,9 +401,11 @@ scan_smart_url_findings() {
 
     close_json_report "$sensitive_file"
     close_json_report "$secret_file"
+    sort -u "$potential_file" -o "$potential_file"
 
     success "Smart sensitive file URLs saved to $sensitive_file"
     success "Smart secret URL patterns saved to $secret_file"
+    success "Potential vulnerability URLs saved to $potential_file"
 }
 
 scan_smart_url_pattern() {
@@ -373,6 +415,7 @@ scan_smart_url_pattern() {
     pattern="$4"
 
     printf '%s\n' "$url" | grep -Eio -- "$pattern" | head -n "$MAX_MATCHES_PER_PATTERN" | while IFS= read -r match_value; do
+        printf '%s\n' "$url" >> potential_vuln_urls.txt
         append_url_json_finding "$output_file" "$label" "$url" "$match_value"
     done
 }
@@ -453,38 +496,75 @@ count_json_findings() {
     fi
 }
 
+count_jsonl_findings() {
+    count_lines "$1"
+}
+
+organize_output() {
+    mkdir -p raw reports evidence
+
+    for file in subdomains.txt resolved_subdomains.txt authsubs.txt unauthsubs.txt urls.txt js_files.txt json_files.txt authjs_files.txt authjson_files.txt; do
+        [ -f "$file" ] && mv -f "$file" "raw/$file"
+    done
+
+    for file in \
+        url_info_disclosure.txt \
+        url_regex_dictionary.txt \
+        smart_sensitive_files.json \
+        smart_secret_urls.json \
+        smart_url_filter_dictionary.txt \
+        generic_api_keys.json \
+        genuine_leaks.json \
+        gitleaks_report.json \
+        js_vulnerability_findings.json \
+        js_regex_dictionary.txt \
+        js_secret_summary.txt \
+        nuclei_findings.jsonl \
+        nuclei_potential_url_findings.jsonl \
+        potential_vuln_urls.txt \
+        tls_findings.jsonl; do
+        [ -f "$file" ] && mv -f "$file" "reports/$file"
+    done
+
+    [ -f downloaded_js_map.txt ] && mv -f downloaded_js_map.txt evidence/downloaded_js_map.txt
+    [ -d downloaded_js ] && mv -f downloaded_js evidence/downloaded_js
+}
+
 print_summary() {
     domain="$1"
 
     section "Scan Summary"
     stat_line "Target" "$domain"
-    stat_line "Subdomains" "$(count_lines subdomains.txt)"
-    stat_line "Live hosts" "$(count_lines authsubs.txt)"
-    stat_line "Non-live hosts" "$(count_lines unauthsubs.txt)"
-    stat_line "URLs collected" "$(count_lines urls.txt)"
-    stat_line "URL disclosures" "$(count_lines url_info_disclosure.txt)"
-    stat_line "Smart files" "$(count_json_findings smart_sensitive_files.json)"
-    stat_line "Smart URL secrets" "$(count_json_findings smart_secret_urls.json)"
-    stat_line "Live JS files" "$(count_lines authjs_files.txt)"
-    stat_line "Live JSON files" "$(count_lines authjson_files.txt)"
-    stat_line "Generic API keys" "$(count_json_findings generic_api_keys.json)"
-    stat_line "Genuine leaks" "$(count_json_findings genuine_leaks.json)"
-    stat_line "JS vuln indicators" "$(count_json_findings js_vulnerability_findings.json)"
+    stat_line "Subdomains" "$(count_lines raw/subdomains.txt)"
+    stat_line "Resolved domains" "$(count_lines raw/resolved_subdomains.txt)"
+    stat_line "Live hosts" "$(count_lines raw/authsubs.txt)"
+    stat_line "Non-live hosts" "$(count_lines raw/unauthsubs.txt)"
+    stat_line "URLs collected" "$(count_lines raw/urls.txt)"
+    stat_line "URL disclosures" "$(count_lines reports/url_info_disclosure.txt)"
+    stat_line "Smart files" "$(count_json_findings reports/smart_sensitive_files.json)"
+    stat_line "Smart URL secrets" "$(count_json_findings reports/smart_secret_urls.json)"
+    stat_line "Live JS files" "$(count_lines raw/authjs_files.txt)"
+    stat_line "Live JSON files" "$(count_lines raw/authjson_files.txt)"
+    stat_line "Generic API keys" "$(count_json_findings reports/generic_api_keys.json)"
+    stat_line "Genuine leaks" "$(count_json_findings reports/genuine_leaks.json)"
+    stat_line "JS vuln indicators" "$(count_json_findings reports/js_vulnerability_findings.json)"
+    stat_line "Nuclei findings" "$(count_jsonl_findings reports/nuclei_findings.jsonl)"
+    stat_line "Potential URL vulns" "$(count_jsonl_findings reports/nuclei_potential_url_findings.jsonl)"
+    stat_line "TLS records" "$(count_jsonl_findings reports/tls_findings.jsonl)"
 
     printf '\n%b%s%b\n' "$BOLD" "Result files" "$RESET"
     stat_line "Directory" "recon_$domain"
-    stat_line "URL disclosures" "url_info_disclosure.txt"
-    stat_line "URL dictionary" "url_regex_dictionary.txt"
-    stat_line "Smart files" "smart_sensitive_files.json"
-    stat_line "Smart URL secrets" "smart_secret_urls.json"
-    stat_line "Smart dictionary" "smart_url_filter_dictionary.txt"
-    stat_line "Generic keys" "generic_api_keys.json"
-    stat_line "Genuine leaks" "genuine_leaks.json"
-    stat_line "Gitleaks JSON" "gitleaks_report.json"
-    stat_line "JS vulns" "js_vulnerability_findings.json"
-    stat_line "Regex dictionary" "js_regex_dictionary.txt"
-    stat_line "JS map" "downloaded_js_map.txt"
-    stat_line "Summary" "js_secret_summary.txt"
+    stat_line "Raw data" "raw/"
+    stat_line "Reports" "reports/"
+    stat_line "Evidence" "evidence/"
+    stat_line "Smart files" "reports/smart_sensitive_files.json"
+    stat_line "Smart URL secrets" "reports/smart_secret_urls.json"
+    stat_line "Nuclei" "reports/nuclei_findings.jsonl"
+    stat_line "Potential nuclei" "reports/nuclei_potential_url_findings.jsonl"
+    stat_line "Potential URLs" "reports/potential_vuln_urls.txt"
+    stat_line "TLS" "reports/tls_findings.jsonl"
+    stat_line "JS leaks" "reports/genuine_leaks.json"
+    stat_line "JS map" "evidence/downloaded_js_map.txt"
 }
 
 # Recon start
@@ -498,12 +578,20 @@ recon() {
     subfinder -d "$1" -silent > subdomains.txt
     success "Saved $(count_lines subdomains.txt) subdomains to subdomains.txt"
 
+    step "Resolving subdomains with dnsx"
+    dnsx -l subdomains.txt -silent > resolved_subdomains.txt
+    if [ ! -s resolved_subdomains.txt ]; then
+        warn "dnsx found no resolved subdomains; falling back to raw subdomain list."
+        cp subdomains.txt resolved_subdomains.txt
+    fi
+    success "Saved $(count_lines resolved_subdomains.txt) resolved subdomains to resolved_subdomains.txt"
+
     step "Checking live domains"
-    cat subdomains.txt | httpx -silent -mc 200 > authsubs.txt
+    cat resolved_subdomains.txt | httpx -silent -mc 200 > authsubs.txt
     success "Saved $(count_lines authsubs.txt) live domains to authsubs.txt"
 
     step "Checking non-live domains"
-    cat subdomains.txt | httpx -silent -mc 400,401,402,403,404 > unauthsubs.txt
+    cat resolved_subdomains.txt | httpx -silent -mc 400,401,402,403,404 > unauthsubs.txt
     success "Saved $(count_lines unauthsubs.txt) non-live domains to unauthsubs.txt"
     
     LINE_COUNT=$(wc -l < "authsubs.txt")
@@ -551,6 +639,10 @@ recon() {
     download_js_files "authjs_files.txt"
     scan_js_secrets
 
+    section "ProjectDiscovery Checks"
+    run_projectdiscovery_checks
+
+    organize_output
     print_summary "$1"
     printf '\n'
     success "Recon complete."

@@ -2,6 +2,8 @@
 
 set -e
 
+GO_VERSION="1.24.2"
+
 echo "[*] Checking dependencies..."
 
 command_exists() {
@@ -11,19 +13,34 @@ command_exists() {
 # Install Go if missing
 if ! command_exists go; then
     echo "[*] Installing Go..."
+    os_name=$(uname -s | tr '[:upper:]' '[:lower:]')
+    arch_name=$(uname -m)
+
+    case "$arch_name" in
+        x86_64) arch_name="amd64" ;;
+        arm64|aarch64) arch_name="arm64" ;;
+        *)
+            echo "[!] Unsupported architecture: $arch_name"
+            exit 1
+            ;;
+    esac
+
+    go_archive="go${GO_VERSION}.${os_name}-${arch_name}.tar.gz"
+    go_url="https://go.dev/dl/$go_archive"
 
     if command_exists wget; then
-        wget https://golang.org/dl/go1.21.1.linux-amd64.tar.gz
+        wget "$go_url"
     elif command_exists curl; then
-        curl -LO https://golang.org/dl/go1.21.1.linux-amd64.tar.gz
+        curl -LO "$go_url"
     else
         echo "[!] wget or curl is required to download Go."
         exit 1
     fi
 
-    sudo tar -C /usr/local -xzf go1.21.1.linux-amd64.tar.gz
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf "$go_archive"
     export PATH="$PATH:/usr/local/go/bin"
-    rm go1.21.1.linux-amd64.tar.gz
+    rm "$go_archive"
 else
     echo "[OK] Go is already installed"
 fi
@@ -38,15 +55,18 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 
 # Install tools
-echo "[*] Installing subfinder, httpx, katana, waybackurls, and gitleaks..."
+echo "[*] Installing subfinder, dnsx, httpx, katana, nuclei, tlsx, waybackurls, and gitleaks..."
 go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest
 go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+go install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest
 go install -v github.com/tomnomnom/waybackurls@latest
 go install -v github.com/zricethezav/gitleaks/v8@latest
 
 echo "[*] Verifying installed tools..."
-for tool in subfinder httpx katana waybackurls gitleaks; do
+for tool in subfinder dnsx httpx katana nuclei tlsx waybackurls gitleaks; do
     if command_exists "$tool"; then
         echo "[OK] $tool installed"
     else
