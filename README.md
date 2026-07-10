@@ -13,11 +13,14 @@ The tool is designed to produce practical files you can review quickly after a s
 - Live URL crawling with `katana`
 - Vulnerability checks with `nuclei`
 - TLS metadata collection with `tlsx`
+- Subdomain takeover checks with `subzy` when installed
 - JavaScript and JSON URL extraction, including URLs with query strings
 - URL-based information-disclosure checks
 - Smart URL filtering for sensitive files and secret-looking URL patterns
+- Confirmed validators for exposed files, open redirects, CORS, GraphQL, public cloud storage, and subdomain takeover
 - JavaScript download and analysis
 - Separate reports for generic API key candidates, higher-confidence leaks, Gitleaks findings, and JS vulnerability indicators
+- Tuned concurrency for faster scans while keeping validation focused
 - Optional Discord webhook upload for zipped results
 - Cleaner CLI output with scan sections and a final summary
 
@@ -38,6 +41,7 @@ The installer checks for Go and installs:
 - `katana`
 - `nuclei`
 - `tlsx`
+- `subzy`
 - `waybackurls`
 - `gitleaks`
 
@@ -85,6 +89,15 @@ recon_example.com/
 │   ├── smart_sensitive_files.json
 │   ├── smart_secret_urls.json
 │   ├── smart_url_filter_dictionary.txt
+│   ├── confirmed_findings.json
+│   ├── confirmed_findings.jsonl
+│   ├── confirmed_findings_summary.txt
+│   ├── subdomain_takeover_findings.json
+│   ├── sensitive_file_candidates.txt
+│   ├── open_redirect_candidates.txt
+│   ├── cors_candidates.txt
+│   ├── graphql_candidates.txt
+│   ├── bucket_candidates.txt
 │   ├── potential_vuln_urls.txt
 │   ├── generic_api_keys.json
 │   ├── genuine_leaks.json
@@ -97,7 +110,8 @@ recon_example.com/
 │   └── js_secret_summary.txt
 └── evidence/
     ├── downloaded_js/
-    └── downloaded_js_map.txt
+    ├── downloaded_js_map.txt
+    └── validator_tmp/
 ```
 
 ## URL Exposure Analysis
@@ -121,6 +135,31 @@ recon_example.com/
 `smart_secret_urls.json` stores the matched URL fragment so query-string evidence can be reviewed directly from the report.
 
 `potential_vuln_urls.txt` deduplicates URLs matched by the smart filter. ReconRaptor uses this list for a focused Nuclei pass.
+
+## Confirmed Validators
+
+`confirmed_findings.json` is the main high-signal report. It is built from checks that make a live request and require evidence before writing a finding.
+
+Current validators include:
+
+- Exposed sensitive files: confirms HTTP 200 and looks for config, credential, or sensitive-file evidence.
+- Open redirects: replaces redirect-like parameters with a controlled external URL and confirms the `Location` header.
+- CORS issues: checks wildcard origins and reflected arbitrary origins with credentials.
+- GraphQL exposure: checks introspection and exposed interactive GraphQL consoles.
+- Public cloud storage: checks S3, Google Cloud Storage, Azure Blob, Firebase, and similar URLs for readable objects or listings.
+- Subdomain takeover: uses `subzy` when available and also keeps Nuclei takeover output in the normal Nuclei reports.
+
+The validator layer uses a per-category cap and concurrent requests so large URL lists stay manageable. You can tune it per run:
+
+```bash
+MAX_VALIDATION_TARGETS=500 VALIDATOR_PARALLELISM=20 ./reconraptor.sh -d example.com
+```
+
+The default values are conservative enough for bug bounty use:
+
+- `MAX_VALIDATION_TARGETS=300`
+- `VALIDATOR_PARALLELISM=12`
+- `CURL_TIMEOUT=12`
 
 ## JavaScript Analysis
 
@@ -160,6 +199,7 @@ go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install -v github.com/projectdiscovery/katana/cmd/katana@latest
 go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 go install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest
+go install -v github.com/PentestPad/subzy@latest
 go install -v github.com/tomnomnom/waybackurls@latest
 go install -v github.com/zricethezav/gitleaks/v8@latest
 ```

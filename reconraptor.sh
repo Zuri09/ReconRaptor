@@ -11,6 +11,9 @@ BOLD="${ESC}[1m"
 DIM="${ESC}[2m"
 RESET="${ESC}[0m"
 MAX_MATCHES_PER_PATTERN=50
+MAX_VALIDATION_TARGETS="${MAX_VALIDATION_TARGETS:-300}"
+VALIDATOR_PARALLELISM="${VALIDATOR_PARALLELISM:-12}"
+CURL_TIMEOUT="${CURL_TIMEOUT:-12}"
 
 info() {
     printf '%b%s%b\n' "$1" "$2" "$RESET"
@@ -71,6 +74,10 @@ check_installed() {
             exit 1
         fi
     done
+
+    if ! command -v subzy >/dev/null 2>&1; then
+        warn "subzy is not installed. Subdomain takeover checks will use nuclei only."
+    fi
 }
 
 run_projectdiscovery_checks() {
@@ -92,6 +99,8 @@ run_projectdiscovery_checks() {
         -severity low,medium,high,critical \
         -jsonl \
         -omit-raw \
+        -c 25 \
+        -rl 100 \
         -silent \
         -o "$nuclei_file" >/dev/null 2>&1 || warn "nuclei completed with findings or warnings."
 
@@ -101,6 +110,8 @@ run_projectdiscovery_checks() {
             -severity low,medium,high,critical \
             -jsonl \
             -omit-raw \
+            -c 25 \
+            -rl 100 \
             -silent \
             -o "$nuclei_potential_file" >/dev/null 2>&1 || warn "nuclei potential URL scan completed with findings or warnings."
     fi
@@ -109,6 +120,282 @@ run_projectdiscovery_checks() {
     sed 's#^https\?://##' authsubs.txt | tlsx -json -silent > "$tls_file" 2>/dev/null || warn "tlsx completed with warnings."
 
     success "ProjectDiscovery checks saved to $nuclei_file and $tls_file"
+}
+
+run_confirmed_validators() {
+    domain="$1"
+    confirmed_jsonl="confirmed_findings.jsonl"
+    confirmed_json="confirmed_findings.json"
+    validator_summary="confirmed_findings_summary.txt"
+    takeover_file="subdomain_takeover_findings.json"
+    validator_tmp="validator_tmp"
+
+    : > "$confirmed_jsonl"
+    : > "$validator_summary"
+    init_json_report "$takeover_file"
+    mkdir -p "$validator_tmp"
+
+    prepare_validator_candidates
+
+    step "Validating exposed files, redirects, CORS, GraphQL, buckets, and takeovers"
+    run_parallel_file_checks sensitive_file_candidates.txt validate_sensitive_url "$validator_tmp/sensitive"
+    run_parallel_file_checks open_redirect_candidates.txt validate_open_redirect_url "$validator_tmp/redirect"
+    run_parallel_file_checks cors_candidates.txt validate_cors_target "$validator_tmp/cors"
+    run_parallel_file_checks graphql_candidates.txt validate_graphql_url "$validator_tmp/graphql"
+    run_parallel_file_checks bucket_candidates.txt validate_bucket_url "$validator_tmp/bucket"
+
+    find "$validator_tmp" -type f -name '*.jsonl' -exec cat {} \; >> "$confirmed_jsonl" 2>/dev/null
+
+    run_takeover_checks "$takeover_file" "$confirmed_jsonl"
+    jsonl_to_json_array "$confirmed_jsonl" "$confirmed_json"
+
+    {
+        printf 'Confirmed/high-confidence findings: %s\n' "$(count_json_findings "$confirmed_json")"
+        printf 'Sensitive file candidates checked: %s\n' "$(count_lines sensitive_file_candidates.txt)"
+        printf 'Open redirect candidates checked: %s\n' "$(count_lines open_redirect_candidates.txt)"
+        printf 'CORS candidates checked: %s\n' "$(count_lines cors_candidates.txt)"
+        printf 'GraphQL candidates checked: %s\n' "$(count_lines graphql_candidates.txt)"
+        printf 'Cloud bucket candidates checked: %s\n' "$(count_lines bucket_candidates.txt)"
+        printf 'Parallelism: %s\n' "$VALIDATOR_PARALLELISM"
+        printf 'Candidate cap per validator: %s\n' "$MAX_VALIDATION_TARGETS"
+    } > "$validator_summary"
+
+    success "Confirmed findings saved to $confirmed_json"
+}
+
+prepare_validator_candidates() {
+    : > sensitive_file_candidates.txt
+    : > open_redirect_candidates.txt
+    : > cors_candidates.txt
+    : > graphql_candidates.txt
+    : > bucket_candidates.txt
+
+    if [ -s potential_vuln_urls.txt ]; then
+        grep -Ei '\.(env|config|conf|ini|ya?ml|xml|json|log|bak|backup|old|orig|save|swp|zip|tar|tgz|tar\.gz|7z|rar|sql|db|sqlite|pem|key|p12|pfx)([?#].*)?$|/(\.env|backup|backups|dump|dumps|exports?|downloads?|logs?|debug|configs?|private|internal)(/|$|[?#])' potential_vuln_urls.txt >> sensitive_file_candidates.txt
+        grep -Ei '([?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=)' potential_vuln_urls.txt >> open_redirect_candidates.txt
+        grep -Ei '(/graphql($|[/?#])|/graphiql($|[/?#]))' potential_vuln_urls.txt >> graphql_candidates.txt
+        grep -Ei '(s3\.amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net|firebaseio\.com|supabase\.co)' potential_vuln_urls.txt >> bucket_candidates.txt
+    fi
+
+    if [ -s urls.txt ]; then
+        grep -Ei '\.(env|config|conf|ini|ya?ml|xml|json|log|bak|backup|old|orig|save|swp|zip|tar|tgz|tar\.gz|7z|rar|sql|db|sqlite|pem|key|p12|pfx)([?#].*)?$|/(\.env|backup|backups|dump|dumps|exports?|downloads?|logs?|debug|configs?|private|internal)(/|$|[?#])' urls.txt >> sensitive_file_candidates.txt
+        grep -Ei '([?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=)' urls.txt >> open_redirect_candidates.txt
+        grep -Ei '(/graphql($|[/?#])|/graphiql($|[/?#]))' urls.txt >> graphql_candidates.txt
+        grep -Ei '(s3\.amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net|firebaseio\.com|supabase\.co)' urls.txt >> bucket_candidates.txt
+    fi
+
+    if [ -s authsubs.txt ]; then
+        cat authsubs.txt >> cors_candidates.txt
+    fi
+
+    if [ -s urls.txt ]; then
+        grep -Ei '/(api|graphql|v[0-9]|rest|ajax)(/|$|[?#])' urls.txt >> cors_candidates.txt
+    fi
+
+    cap_unique_file sensitive_file_candidates.txt
+    cap_unique_file open_redirect_candidates.txt
+    cap_unique_file cors_candidates.txt
+    cap_unique_file graphql_candidates.txt
+    cap_unique_file bucket_candidates.txt
+}
+
+cap_unique_file() {
+    file="$1"
+    [ -f "$file" ] || return
+    sort -u "$file" | head -n "$MAX_VALIDATION_TARGETS" > "$file.tmp"
+    mv -f "$file.tmp" "$file"
+}
+
+run_parallel_file_checks() {
+    input_file="$1"
+    validator="$2"
+    out_prefix="$3"
+
+    [ -s "$input_file" ] || return
+
+    job_count=0
+    while IFS= read -r target; do
+        [ -z "$target" ] && continue
+        job_id=$(printf '%s' "$target" | cksum | awk '{print $1}')
+        "$validator" "$target" > "${out_prefix}_${job_id}.jsonl" &
+        job_count=$((job_count + 1))
+
+        if [ "$job_count" -ge "$VALIDATOR_PARALLELISM" ]; then
+            wait
+            job_count=0
+        fi
+    done < "$input_file"
+    wait
+}
+
+validate_sensitive_url() {
+    url="$1"
+    work_id=$(printf '%s' "$url" | cksum | awk '{print $1}')
+    header_file="validator_tmp/${work_id}_sensitive_headers.txt"
+    body_file="validator_tmp/${work_id}_sensitive_body.txt"
+
+    status=$(curl -ksL --range 0-8191 --connect-timeout 5 --max-time "$CURL_TIMEOUT" -D "$header_file" -o "$body_file" -w '%{http_code}' "$url" 2>/dev/null)
+    [ "$status" = "200" ] || return
+    [ -s "$body_file" ] || return
+
+    content_type=$(grep -i '^content-type:' "$header_file" | head -n 1 | sed 's/^[Cc]ontent-[Tt]ype:[[:space:]]*//;s/\r//')
+    evidence=""
+    confidence="high"
+
+    if grep -Eiq '(DB_HOST|DB_PASSWORD|APP_KEY|APP_SECRET|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|PRIVATE KEY|BEGIN RSA|password[[:space:]]*=|api[_-]?key[[:space:]]*=|secret[[:space:]]*=)' "$body_file"; then
+        evidence="status 200 with configuration or credential keywords"
+        confidence="confirmed"
+    elif printf '%s\n' "$url" | grep -Eiq '\.(zip|tar|tgz|tar\.gz|7z|rar|sql|db|sqlite|bak|backup|old|log|json|ya?ml|ini|xml|pem|key)([?#].*)?$'; then
+        evidence="status 200 for sensitive file path; content-type: $content_type"
+    else
+        return
+    fi
+
+    emit_jsonl_finding "exposed_sensitive_file" "$url" "$confidence" "$status" "$evidence"
+}
+
+validate_open_redirect_url() {
+    url="$1"
+    test_url=$(printf '%s' "$url" | sed -E 's#([?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=)[^&#]*#\1https%3A%2F%2Fexample.com%2F#')
+    [ "$test_url" != "$url" ] || return
+
+    header_file="validator_tmp/$(printf '%s' "$url" | cksum | awk '{print $1}')_redirect_headers.txt"
+    status=$(curl -ksI --connect-timeout 5 --max-time "$CURL_TIMEOUT" --max-redirs 0 -D "$header_file" -o /dev/null -w '%{http_code}' "$test_url" 2>/dev/null)
+    location=$(grep -i '^location:' "$header_file" | head -n 1 | sed 's/^[Ll]ocation:[[:space:]]*//;s/\r//')
+
+    if printf '%s\n' "$location" | grep -Eiq '^https?://example\.com/?'; then
+        emit_jsonl_finding "open_redirect" "$test_url" "confirmed" "$status" "Location header redirects to controlled external host"
+    fi
+}
+
+validate_cors_target() {
+    url="$1"
+    header_file="validator_tmp/$(printf '%s' "$url" | cksum | awk '{print $1}')_cors_headers.txt"
+    status=$(curl -ksI --connect-timeout 5 --max-time "$CURL_TIMEOUT" -H 'Origin: https://evil.example' -D "$header_file" -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)
+    allow_origin=$(grep -i '^access-control-allow-origin:' "$header_file" | head -n 1 | sed 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin:[[:space:]]*//;s/\r//')
+    allow_credentials=$(grep -i '^access-control-allow-credentials:' "$header_file" | head -n 1 | sed 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Cc]redentials:[[:space:]]*//;s/\r//')
+
+    if [ "$allow_origin" = "https://evil.example" ] && printf '%s\n' "$allow_credentials" | grep -Eiq '^true$'; then
+        emit_jsonl_finding "cors_origin_reflection_with_credentials" "$url" "confirmed" "$status" "Reflected arbitrary Origin with credentials enabled"
+    elif [ "$allow_origin" = "*" ]; then
+        emit_jsonl_finding "cors_wildcard_origin" "$url" "high" "$status" "Wildcard Access-Control-Allow-Origin observed"
+    fi
+}
+
+validate_graphql_url() {
+    url="$1"
+    work_id=$(printf '%s' "$url" | cksum | awk '{print $1}')
+    body_file="validator_tmp/${work_id}_graphql_body.txt"
+    payload='{"query":"query IntrospectionQuery { __schema { queryType { name } mutationType { name } types { name } } }"}'
+
+    status=$(curl -ks --connect-timeout 5 --max-time "$CURL_TIMEOUT" -H 'Content-Type: application/json' --data "$payload" -o "$body_file" -w '%{http_code}' "$url" 2>/dev/null)
+    if [ "$status" = "200" ] && grep -Eq '"__schema"|"queryType"|"types"' "$body_file"; then
+        emit_jsonl_finding "graphql_introspection_enabled" "$url" "confirmed" "$status" "GraphQL introspection response contains schema fields"
+        return
+    fi
+
+    status=$(curl -ksL --connect-timeout 5 --max-time "$CURL_TIMEOUT" -o "$body_file" -w '%{http_code}' "$url" 2>/dev/null)
+    if [ "$status" = "200" ] && grep -Eiq '(GraphiQL|GraphQL Playground|Apollo Sandbox|__schema)' "$body_file"; then
+        emit_jsonl_finding "graphql_playground_exposed" "$url" "high" "$status" "GraphQL interactive UI or schema marker is reachable"
+    fi
+}
+
+validate_bucket_url() {
+    url="$1"
+    work_id=$(printf '%s' "$url" | cksum | awk '{print $1}')
+    body_file="validator_tmp/${work_id}_bucket_body.txt"
+    status=$(curl -ksL --range 0-8191 --connect-timeout 5 --max-time "$CURL_TIMEOUT" -o "$body_file" -w '%{http_code}' "$url" 2>/dev/null)
+
+    if [ "$status" = "200" ] && grep -Eiq '(<ListBucketResult|<Contents>|<Key>|<Name>|Blob|firebaseio|storage.googleapis.com)' "$body_file"; then
+        emit_jsonl_finding "public_cloud_bucket_listing" "$url" "confirmed" "$status" "Cloud storage listing or object metadata is publicly readable"
+    elif [ "$status" = "200" ] && printf '%s\n' "$url" | grep -Eiq '(s3\.amazonaws\.com|storage\.googleapis\.com|blob\.core\.windows\.net|firebaseio\.com)'; then
+        emit_jsonl_finding "public_cloud_storage_object" "$url" "high" "$status" "Cloud storage URL returned HTTP 200"
+    fi
+}
+
+run_takeover_checks() {
+    takeover_file="$1"
+    confirmed_jsonl="$2"
+
+    if [ ! -s resolved_subdomains.txt ]; then
+        close_json_report "$takeover_file"
+        return
+    fi
+
+    if command -v subzy >/dev/null 2>&1; then
+        step "Checking subdomain takeovers with subzy"
+        subzy run \
+            --targets resolved_subdomains.txt \
+            --hide_fails \
+            --vuln \
+            --concurrency "$VALIDATOR_PARALLELISM" \
+            --timeout "$CURL_TIMEOUT" \
+            --output "$takeover_file" >/dev/null 2>&1 || warn "subzy completed with findings or warnings."
+        parse_subzy_vulnerable_targets "$takeover_file" | while IFS= read -r target; do
+            [ -n "$target" ] && emit_jsonl_finding "subdomain_takeover" "$target" "confirmed" "n/a" "subzy marked the host vulnerable" >> "$confirmed_jsonl"
+        done
+    else
+        close_json_report "$takeover_file"
+    fi
+}
+
+parse_subzy_vulnerable_targets() {
+    awk '
+        /{/ {
+            subdomain = ""
+            status = ""
+            vulnerable = ""
+        }
+        /"subdomain"[[:space:]]*:/ {
+            line = $0
+            sub(/.*"subdomain"[[:space:]]*:[[:space:]]*"/, "", line)
+            sub(/".*/, "", line)
+            subdomain = line
+        }
+        /"status"[[:space:]]*:/ {
+            line = $0
+            sub(/.*"status"[[:space:]]*:[[:space:]]*"/, "", line)
+            sub(/".*/, "", line)
+            status = line
+        }
+        /"vulnerable"[[:space:]]*:/ {
+            line = $0
+            sub(/.*"vulnerable"[[:space:]]*:[[:space:]]*/, "", line)
+            sub(/,.*/, "", line)
+            vulnerable = line
+        }
+        /}/ {
+            if (subdomain != "" && (status == "vulnerable" || vulnerable == "true")) {
+                print subdomain
+            }
+        }
+    ' "$1"
+}
+
+emit_jsonl_finding() {
+    finding_type="$1"
+    source_url="$2"
+    confidence="$3"
+    status="$4"
+    evidence="$5"
+
+    printf '{"type":"%s","source_url":"%s","confidence":"%s","status":"%s","evidence":"%s"}\n' \
+        "$(json_escape "$finding_type")" \
+        "$(json_escape "$source_url")" \
+        "$(json_escape "$confidence")" \
+        "$(json_escape "$status")" \
+        "$(json_escape "$evidence")"
+}
+
+jsonl_to_json_array() {
+    input_file="$1"
+    output_file="$2"
+
+    printf '[\n' > "$output_file"
+    if [ -s "$input_file" ]; then
+        awk 'NF { if (seen[$0]++) next; if (count++ > 0) printf ",\n"; printf "  %s", $0 } END { if (count > 0) printf "\n" }' "$input_file" >> "$output_file"
+    fi
+    printf ']\n' >> "$output_file"
 }
 
 download_js_files() {
@@ -508,6 +795,15 @@ organize_output() {
     done
 
     for file in \
+        confirmed_findings.json \
+        confirmed_findings.jsonl \
+        confirmed_findings_summary.txt \
+        subdomain_takeover_findings.json \
+        sensitive_file_candidates.txt \
+        open_redirect_candidates.txt \
+        cors_candidates.txt \
+        graphql_candidates.txt \
+        bucket_candidates.txt \
         url_info_disclosure.txt \
         url_regex_dictionary.txt \
         smart_sensitive_files.json \
@@ -528,6 +824,7 @@ organize_output() {
 
     [ -f downloaded_js_map.txt ] && mv -f downloaded_js_map.txt evidence/downloaded_js_map.txt
     [ -d downloaded_js ] && mv -f downloaded_js evidence/downloaded_js
+    [ -d validator_tmp ] && mv -f validator_tmp evidence/validator_tmp
 }
 
 print_summary() {
@@ -543,6 +840,7 @@ print_summary() {
     stat_line "URL disclosures" "$(count_lines reports/url_info_disclosure.txt)"
     stat_line "Smart files" "$(count_json_findings reports/smart_sensitive_files.json)"
     stat_line "Smart URL secrets" "$(count_json_findings reports/smart_secret_urls.json)"
+    stat_line "Confirmed findings" "$(count_json_findings reports/confirmed_findings.json)"
     stat_line "Live JS files" "$(count_lines raw/authjs_files.txt)"
     stat_line "Live JSON files" "$(count_lines raw/authjson_files.txt)"
     stat_line "Generic API keys" "$(count_json_findings reports/generic_api_keys.json)"
@@ -560,6 +858,8 @@ print_summary() {
     stat_line "Smart files" "reports/smart_sensitive_files.json"
     stat_line "Smart URL secrets" "reports/smart_secret_urls.json"
     stat_line "Nuclei" "reports/nuclei_findings.jsonl"
+    stat_line "Confirmed" "reports/confirmed_findings.json"
+    stat_line "Validator summary" "reports/confirmed_findings_summary.txt"
     stat_line "Potential nuclei" "reports/nuclei_potential_url_findings.jsonl"
     stat_line "Potential URLs" "reports/potential_vuln_urls.txt"
     stat_line "TLS" "reports/tls_findings.jsonl"
@@ -579,7 +879,7 @@ recon() {
     success "Saved $(count_lines subdomains.txt) subdomains to subdomains.txt"
 
     step "Resolving subdomains with dnsx"
-    dnsx -l subdomains.txt -silent > resolved_subdomains.txt
+    dnsx -l subdomains.txt -retry 1 -silent > resolved_subdomains.txt
     if [ ! -s resolved_subdomains.txt ]; then
         warn "dnsx found no resolved subdomains; falling back to raw subdomain list."
         cp subdomains.txt resolved_subdomains.txt
@@ -587,11 +887,11 @@ recon() {
     success "Saved $(count_lines resolved_subdomains.txt) resolved subdomains to resolved_subdomains.txt"
 
     step "Checking live domains"
-    cat resolved_subdomains.txt | httpx -silent -mc 200 > authsubs.txt
+    cat resolved_subdomains.txt | httpx -silent -threads 50 -mc 200 > authsubs.txt
     success "Saved $(count_lines authsubs.txt) live domains to authsubs.txt"
 
     step "Checking non-live domains"
-    cat resolved_subdomains.txt | httpx -silent -mc 400,401,402,403,404 > unauthsubs.txt
+    cat resolved_subdomains.txt | httpx -silent -threads 50 -mc 400,401,402,403,404 > unauthsubs.txt
     success "Saved $(count_lines unauthsubs.txt) non-live domains to unauthsubs.txt"
     
     LINE_COUNT=$(wc -l < "authsubs.txt")
@@ -606,7 +906,7 @@ recon() {
     cat authsubs.txt | waybackurls > urls.txt
 
     step "Crawling live domains with katana"
-    katana -list authsubs.txt -silent >> urls.txt
+    katana -list authsubs.txt -c 20 -d 2 -silent >> urls.txt
 
     LINE_COUNT=$(wc -l < "unauthsubs.txt")
     if [ "$LINE_COUNT" -gt 20 ]; then
@@ -631,8 +931,8 @@ recon() {
     success "Saved $(count_lines js_files.txt) JS URLs and $(count_lines json_files.txt) JSON URLs"
 
     step "Validating live JS and JSON files"
-    cat js_files.txt | httpx -silent -mc 200 > authjs_files.txt
-    cat json_files.txt | httpx -silent -mc 200 > authjson_files.txt
+    cat js_files.txt | httpx -silent -threads 50 -mc 200 > authjs_files.txt
+    cat json_files.txt | httpx -silent -threads 50 -mc 200 > authjson_files.txt
     success "Validated $(count_lines authjs_files.txt) live JS files and $(count_lines authjson_files.txt) live JSON files"
 
     section "Secret Analysis"
@@ -641,6 +941,9 @@ recon() {
 
     section "ProjectDiscovery Checks"
     run_projectdiscovery_checks
+
+    section "Confirmed Validators"
+    run_confirmed_validators "$1"
 
     organize_output
     print_summary "$1"
