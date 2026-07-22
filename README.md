@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-7C3AED.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash-0F172A.svg)](reconraptor.sh)
 [![AI](https://img.shields.io/badge/AI-Ollama%20%7C%20OpenAI-6366F1.svg)](#ai-powered-triage)
+[![Website](https://img.shields.io/badge/site-GitHub%20Pages-22C55E.svg)](https://zuri09.github.io/ReconRaptor/)
 [![Security](https://img.shields.io/badge/use-authorized%20testing-DC2626.svg)](#responsible-use)
 
 ReconRaptor AI is an AI-powered reconnaissance and triage tool for bug bounty and authorized security testing. It discovers assets, collects URLs, validates high-signal exposures, scans JavaScript, runs ProjectDiscovery checks, and turns the output into ranked reports with local or cloud AI.
