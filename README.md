@@ -140,11 +140,11 @@ AI triage is optional. When you pass `--ai`, ReconRaptor AI builds a sanitized c
 
 | File | Purpose |
 | --- | --- |
-| `reports/ai_context.json` | Sanitized context passed to AI or local scoring |
-| `reports/ai_findings.json` | Ranked findings with score, severity, confidence, and next step |
-| `reports/ai_summary.md` | Human-readable triage report |
-| `reports/ai_ollama_response.json` | Raw Ollama response when using local AI |
-| `reports/ai_openai_response.json` | Raw OpenAI response when using OpenAI |
+| `reports/ai/ai_context.json` | Sanitized context passed to AI or local scoring |
+| `reports/ai/ai_findings.json` | Ranked findings with score, severity, confidence, and next step |
+| `reports/ai/ai_summary.md` | Human-readable triage report |
+| `reports/ai/ai_ollama_response.json` | Raw Ollama response when using local AI |
+| `reports/ai/ai_openai_response.json` | Raw OpenAI response when using OpenAI |
 
 Provider modes:
 
@@ -164,7 +164,7 @@ Environment variables:
 | `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model for local triage |
 | `AI_MAX_FINDINGS` | `60` | Max findings included in AI context |
 
-ReconRaptor AI strips secret-like query values, raw request/response content, downloaded JavaScript bodies, and long text before building `ai_context.json`. Treat all scan output as sensitive anyway.
+ReconRaptor AI strips secret-like query values, raw request/response content, downloaded JavaScript bodies, and long text before building `reports/ai/ai_context.json`. Treat all scan output as sensitive anyway.
 
 ## Output structure
 
@@ -172,6 +172,7 @@ Each scan creates a target directory:
 
 ```text
 recon_example.com/
+|-- START_HERE.md
 |-- raw/
 |   |-- subdomains.txt
 |   |-- resolved_subdomains.txt
@@ -183,30 +184,55 @@ recon_example.com/
 |   |-- authjs_files.txt
 |   `-- authjson_files.txt
 |-- reports/
-|   |-- confirmed_findings.json
-|   |-- confirmed_findings_summary.txt
-|   |-- ai_context.json
-|   |-- ai_findings.json
-|   |-- ai_summary.md
-|   |-- generic_api_keys.json
-|   |-- genuine_leaks.json
-|   |-- gitleaks_report.json
-|   |-- js_vulnerability_findings.json
-|   |-- smart_sensitive_files.json
-|   |-- smart_secret_urls.json
-|   |-- url_info_disclosure.txt
-|   |-- nuclei_findings.jsonl
-|   |-- nuclei_potential_url_findings.jsonl
-|   `-- tls_findings.jsonl
+|   |-- findings/
+|   |   |-- confirmed_findings.json
+|   |   |-- confirmed_findings_summary.txt
+|   |   `-- subdomain_takeover_findings.json
+|   |-- ai/
+|   |   |-- ai_context.json
+|   |   |-- ai_findings.json
+|   |   `-- ai_summary.md
+|   |-- urls/
+|   |   |-- url_info_disclosure.txt
+|   |   |-- smart_sensitive_files.json
+|   |   `-- smart_secret_urls.json
+|   |-- js/
+|   |   |-- generic_api_keys.json
+|   |   |-- genuine_leaks.json
+|   |   |-- gitleaks_report.json
+|   |   `-- js_vulnerability_findings.json
+|   |-- pd/
+|   |   |-- nuclei_findings.jsonl
+|   |   |-- nuclei_potential_url_findings.jsonl
+|   |   `-- tls_findings.jsonl
+|   `-- candidates/
+|       |-- sensitive_file_candidates.txt
+|       |-- open_redirect_candidates.txt
+|       |-- cors_candidates.txt
+|       |-- graphql_candidates.txt
+|       `-- potential_vuln_urls.txt
 `-- evidence/
     |-- downloaded_js/
     |-- downloaded_js_map.txt
     `-- validator_tmp/
 ```
 
+Open `START_HERE.md` first. It contains counts, the shortest path to the important reports, and a folder guide for the scan.
+
+| Folder | Best for |
+| --- | --- |
+| `reports/findings/` | Confirmed or high-confidence issues |
+| `reports/ai/` | AI-ranked triage and the sanitized model context |
+| `reports/urls/` | URL-based disclosure leads and sensitive file matches |
+| `reports/js/` | JavaScript secrets, Gitleaks output, and client-side indicators |
+| `reports/pd/` | Nuclei and TLS output |
+| `reports/candidates/` | Raw candidates checked by validators |
+| `raw/` | Discovery data such as subdomains, live hosts, URLs, JS, and JSON |
+| `evidence/` | Downloaded JavaScript and validator evidence |
+
 ## Confirmed validators
 
-`reports/confirmed_findings.json` is the main high-signal report. These checks make live requests and only write findings with concrete evidence.
+`reports/findings/confirmed_findings.json` is the main high-signal report. These checks make live requests and only write findings with concrete evidence.
 
 | Validator | Confirmation logic |
 | --- | --- |
@@ -241,11 +267,11 @@ Main reports:
 
 | Report | Purpose |
 | --- | --- |
-| `generic_api_keys.json` | Broad API key and token candidates |
-| `genuine_leaks.json` | Higher-confidence built-in leak matches |
-| `gitleaks_report.json` | Gitleaks JSON output |
-| `js_vulnerability_findings.json` | Client-side vulnerability indicators |
-| `js_secret_summary.txt` | Summary counts and references |
+| `reports/js/generic_api_keys.json` | Broad API key and token candidates |
+| `reports/js/genuine_leaks.json` | Higher-confidence built-in leak matches |
+| `reports/js/gitleaks_report.json` | Gitleaks JSON output |
+| `reports/js/js_vulnerability_findings.json` | Client-side vulnerability indicators |
+| `reports/js/js_secret_summary.txt` | Summary counts and references |
 
 ## ProjectDiscovery checks
 
@@ -253,9 +279,9 @@ ReconRaptor AI runs additional focused checks after URL and JavaScript analysis:
 
 | Report | Source |
 | --- | --- |
-| `nuclei_findings.jsonl` | Nuclei scan against live hosts |
-| `nuclei_potential_url_findings.jsonl` | Nuclei scan against high-signal URLs |
-| `tls_findings.jsonl` | TLS metadata from `tlsx` |
+| `reports/pd/nuclei_findings.jsonl` | Nuclei scan against live hosts |
+| `reports/pd/nuclei_potential_url_findings.jsonl` | Nuclei scan against high-signal URLs |
+| `reports/pd/tls_findings.jsonl` | TLS metadata from `tlsx` |
 
 Nuclei runs with raw request and response output omitted.
 

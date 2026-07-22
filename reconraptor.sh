@@ -782,11 +782,30 @@ count_lines() {
 }
 
 count_json_findings() {
-    if [ -f "$1" ]; then
-        grep -c '"type":' "$1"
-    else
+    if [ ! -f "$1" ]; then
         printf '0'
+        return
     fi
+
+    python3 - "$1" << 'PY' 2>/dev/null || grep -c '"type":' "$1"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8", errors="ignore") as handle:
+    data = json.load(handle)
+
+if isinstance(data, list):
+    print(len(data))
+elif isinstance(data, dict):
+    for key in ("findings", "results", "matches", "items"):
+        if isinstance(data.get(key), list):
+            print(len(data[key]))
+            break
+    else:
+        print(1 if data else 0)
+else:
+    print(0)
+PY
 }
 
 count_jsonl_findings() {
@@ -807,9 +826,9 @@ run_ai_triage() {
         return
     fi
 
-    mkdir -p reports
-    create_ai_context "$domain" "$AI_MAX_FINDINGS" "reports/ai_context.json"
-    create_rule_based_ai_reports "$domain" "reports/ai_context.json" "reports/ai_findings.json" "reports/ai_summary.md"
+    mkdir -p reports/ai
+    create_ai_context "$domain" "$AI_MAX_FINDINGS" "reports/ai/ai_context.json"
+    create_rule_based_ai_reports "$domain" "reports/ai/ai_context.json" "reports/ai/ai_findings.json" "reports/ai/ai_summary.md"
 
     case "$AI_PROVIDER" in
         openai)
@@ -824,11 +843,11 @@ run_ai_triage() {
             elif command -v ollama >/dev/null 2>&1; then
                 run_ollama_triage "$domain" || warn "Ollama triage failed; kept local AI summary."
             else
-                success "Local AI-style triage saved to reports/ai_summary.md"
+                success "Local AI-style triage saved to reports/ai/ai_summary.md"
             fi
             ;;
         rules|rule|offline)
-            success "Local AI-style triage saved to reports/ai_summary.md"
+            success "Local AI-style triage saved to reports/ai/ai_summary.md"
             ;;
         *)
             warn "Unknown AI provider '$AI_PROVIDER'. Kept local AI summary."
@@ -849,6 +868,10 @@ import sys
 
 domain, max_findings, output_file = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 reports_dir = "reports"
+findings_dir = os.path.join(reports_dir, "findings")
+urls_dir = os.path.join(reports_dir, "urls")
+js_dir = os.path.join(reports_dir, "js")
+pd_dir = os.path.join(reports_dir, "pd")
 
 DROP_KEYS = {
     "match", "secret", "raw", "raw_request", "raw_response", "request", "response",
@@ -951,15 +974,15 @@ context = {
         "live_js": count_lines("raw/authjs_files.txt"),
         "live_json": count_lines("raw/authjson_files.txt"),
     },
-    "confirmed_findings": load_json(os.path.join(reports_dir, "confirmed_findings.json")),
-    "nuclei_findings": load_jsonl(os.path.join(reports_dir, "nuclei_findings.jsonl")),
-    "nuclei_potential_url_findings": load_jsonl(os.path.join(reports_dir, "nuclei_potential_url_findings.jsonl")),
-    "js_vulnerability_indicators": load_json(os.path.join(reports_dir, "js_vulnerability_findings.json")),
-    "genuine_leak_metadata": load_json(os.path.join(reports_dir, "genuine_leaks.json")),
-    "generic_key_metadata": load_json(os.path.join(reports_dir, "generic_api_keys.json")),
-    "smart_sensitive_files": load_json(os.path.join(reports_dir, "smart_sensitive_files.json")),
-    "smart_secret_urls": load_json(os.path.join(reports_dir, "smart_secret_urls.json")),
-    "url_info_disclosure_samples": sample_text(os.path.join(reports_dir, "url_info_disclosure.txt")),
+    "confirmed_findings": load_json(os.path.join(findings_dir, "confirmed_findings.json")),
+    "nuclei_findings": load_jsonl(os.path.join(pd_dir, "nuclei_findings.jsonl")),
+    "nuclei_potential_url_findings": load_jsonl(os.path.join(pd_dir, "nuclei_potential_url_findings.jsonl")),
+    "js_vulnerability_indicators": load_json(os.path.join(js_dir, "js_vulnerability_findings.json")),
+    "genuine_leak_metadata": load_json(os.path.join(js_dir, "genuine_leaks.json")),
+    "generic_key_metadata": load_json(os.path.join(js_dir, "generic_api_keys.json")),
+    "smart_sensitive_files": load_json(os.path.join(urls_dir, "smart_sensitive_files.json")),
+    "smart_secret_urls": load_json(os.path.join(urls_dir, "smart_secret_urls.json")),
+    "url_info_disclosure_samples": sample_text(os.path.join(urls_dir, "url_info_disclosure.txt")),
 }
 
 with open(output_file, "w", encoding="utf-8") as handle:
@@ -1098,18 +1121,18 @@ run_openai_triage() {
     fi
 
     step "Running OpenAI triage with $OPENAI_MODEL"
-    build_openai_payload "$domain" "reports/ai_context.json" "reports/ai_openai_request.json"
+    build_openai_payload "$domain" "reports/ai/ai_context.json" "reports/ai/ai_openai_request.json"
 
     if ! curl -fsS https://api.openai.com/v1/responses \
         -H "Authorization: Bearer $OPENAI_API_KEY" \
         -H "Content-Type: application/json" \
-        -d @reports/ai_openai_request.json \
-        -o reports/ai_openai_response.json; then
+        -d @reports/ai/ai_openai_request.json \
+        -o reports/ai/ai_openai_response.json; then
         return 1
     fi
 
-    extract_ai_text "reports/ai_openai_response.json" "reports/ai_summary.md"
-    success "OpenAI triage saved to reports/ai_summary.md"
+    extract_ai_text "reports/ai/ai_openai_response.json" "reports/ai/ai_summary.md"
+    success "OpenAI triage saved to reports/ai/ai_summary.md"
 }
 
 build_openai_payload() {
@@ -1191,16 +1214,16 @@ run_ollama_triage() {
     fi
 
     step "Running local Ollama triage with $OLLAMA_MODEL"
-    build_ollama_payload "$domain" "reports/ai_context.json" "reports/ai_ollama_request.json"
+    build_ollama_payload "$domain" "reports/ai/ai_context.json" "reports/ai/ai_ollama_request.json"
 
     if ! curl -fsS http://127.0.0.1:11434/api/generate \
         -H "Content-Type: application/json" \
-        -d @reports/ai_ollama_request.json \
-        -o reports/ai_ollama_response.json; then
+        -d @reports/ai/ai_ollama_request.json \
+        -o reports/ai/ai_ollama_response.json; then
         return 1
     fi
 
-    python3 - "reports/ai_ollama_response.json" "reports/ai_summary.md" << 'PY'
+    python3 - "reports/ai/ai_ollama_response.json" "reports/ai/ai_summary.md" << 'PY'
 import json
 import sys
 
@@ -1210,7 +1233,7 @@ with open(response_file, "r", encoding="utf-8", errors="ignore") as handle:
 with open(output_file, "w", encoding="utf-8") as handle:
     handle.write(data.get("response", "").strip() + "\n")
 PY
-    success "Ollama triage saved to reports/ai_summary.md"
+    success "Ollama triage saved to reports/ai/ai_summary.md"
 }
 
 build_ollama_payload() {
@@ -1239,43 +1262,86 @@ PY
 }
 
 organize_output() {
-    mkdir -p raw reports evidence
+    mkdir -p raw reports/findings reports/urls reports/js reports/pd reports/candidates evidence
 
     for file in subdomains.txt resolved_subdomains.txt authsubs.txt unauthsubs.txt urls.txt js_files.txt json_files.txt authjs_files.txt authjson_files.txt; do
         [ -f "$file" ] && mv -f "$file" "raw/$file"
     done
 
-    for file in \
-        confirmed_findings.json \
-        confirmed_findings.jsonl \
-        confirmed_findings_summary.txt \
-        subdomain_takeover_findings.json \
-        sensitive_file_candidates.txt \
-        open_redirect_candidates.txt \
-        cors_candidates.txt \
-        graphql_candidates.txt \
-        bucket_candidates.txt \
-        url_info_disclosure.txt \
-        url_regex_dictionary.txt \
-        smart_sensitive_files.json \
-        smart_secret_urls.json \
-        smart_url_filter_dictionary.txt \
-        generic_api_keys.json \
-        genuine_leaks.json \
-        gitleaks_report.json \
-        js_vulnerability_findings.json \
-        js_regex_dictionary.txt \
-        js_secret_summary.txt \
-        nuclei_findings.jsonl \
-        nuclei_potential_url_findings.jsonl \
-        potential_vuln_urls.txt \
-        tls_findings.jsonl; do
-        [ -f "$file" ] && mv -f "$file" "reports/$file"
+    for file in confirmed_findings.json confirmed_findings.jsonl confirmed_findings_summary.txt subdomain_takeover_findings.json; do
+        [ -f "$file" ] && mv -f "$file" "reports/findings/$file"
+    done
+
+    for file in url_info_disclosure.txt url_regex_dictionary.txt smart_sensitive_files.json smart_secret_urls.json smart_url_filter_dictionary.txt; do
+        [ -f "$file" ] && mv -f "$file" "reports/urls/$file"
+    done
+
+    for file in generic_api_keys.json genuine_leaks.json gitleaks_report.json js_vulnerability_findings.json js_regex_dictionary.txt js_secret_summary.txt; do
+        [ -f "$file" ] && mv -f "$file" "reports/js/$file"
+    done
+
+    for file in nuclei_findings.jsonl nuclei_potential_url_findings.jsonl tls_findings.jsonl; do
+        [ -f "$file" ] && mv -f "$file" "reports/pd/$file"
+    done
+
+    for file in sensitive_file_candidates.txt open_redirect_candidates.txt cors_candidates.txt graphql_candidates.txt bucket_candidates.txt potential_vuln_urls.txt; do
+        [ -f "$file" ] && mv -f "$file" "reports/candidates/$file"
     done
 
     [ -f downloaded_js_map.txt ] && mv -f downloaded_js_map.txt evidence/downloaded_js_map.txt
     [ -d downloaded_js ] && mv -f downloaded_js evidence/downloaded_js
     [ -d validator_tmp ] && mv -f validator_tmp evidence/validator_tmp
+}
+
+write_result_index() {
+    domain="$1"
+    index_file="START_HERE.md"
+
+    {
+        printf '# ReconRaptor AI results for %s\n\n' "$domain"
+        printf 'Start with this short list, then open the folder that matches what you want to review.\n\n'
+        printf '## Start here\n\n'
+        if [ "$AI_ENABLED" = "true" ]; then
+            printf '1. AI triage: `reports/ai/ai_summary.md`\n'
+        fi
+        printf '1. Confirmed findings: `reports/findings/confirmed_findings.json`\n'
+        printf '2. URL exposure leads: `reports/urls/`\n'
+        printf '3. JavaScript secrets and client-side indicators: `reports/js/`\n'
+        printf '4. Nuclei and TLS checks: `reports/pd/`\n'
+        printf '5. Raw discovery data: `raw/`\n'
+        printf '6. Downloaded JS and validator evidence: `evidence/`\n\n'
+
+        printf '## Counts\n\n'
+        printf '| Item | Count |\n'
+        printf '| --- | ---: |\n'
+        printf '| Live hosts | %s |\n' "$(count_lines raw/authsubs.txt)"
+        printf '| URLs collected | %s |\n' "$(count_lines raw/urls.txt)"
+        printf '| Confirmed findings | %s |\n' "$(count_json_findings reports/findings/confirmed_findings.json)"
+        printf '| URL disclosure leads | %s |\n' "$(count_lines reports/urls/url_info_disclosure.txt)"
+        printf '| Smart sensitive files | %s |\n' "$(count_json_findings reports/urls/smart_sensitive_files.json)"
+        printf '| Smart URL secrets | %s |\n' "$(count_json_findings reports/urls/smart_secret_urls.json)"
+        printf '| Genuine JS leaks | %s |\n' "$(count_json_findings reports/js/genuine_leaks.json)"
+        printf '| JS indicators | %s |\n' "$(count_json_findings reports/js/js_vulnerability_findings.json)"
+        printf '| Nuclei findings | %s |\n' "$(count_jsonl_findings reports/pd/nuclei_findings.jsonl)"
+        printf '| Focused Nuclei findings | %s |\n' "$(count_jsonl_findings reports/pd/nuclei_potential_url_findings.jsonl)"
+        if [ "$AI_ENABLED" = "true" ]; then
+            printf '| AI-ranked findings | %s |\n' "$(count_json_findings reports/ai/ai_findings.json)"
+        fi
+
+        printf '\n## Folder guide\n\n'
+        printf '| Folder | What is inside |\n'
+        printf '| --- | --- |\n'
+        printf '| `reports/findings/` | Confirmed or high-confidence validator output |\n'
+        printf '| `reports/ai/` | AI context, ranked findings, and triage summary |\n'
+        printf '| `reports/urls/` | URL-based exposure leads and dictionaries |\n'
+        printf '| `reports/js/` | JavaScript secret scans and client-side indicators |\n'
+        printf '| `reports/pd/` | Nuclei and TLS output |\n'
+        printf '| `reports/candidates/` | Candidate URLs checked by validators |\n'
+        printf '| `raw/` | Subdomains, live hosts, URLs, JS and JSON lists |\n'
+        printf '| `evidence/` | Downloaded JS and temporary validator evidence |\n\n'
+
+        printf 'Treat AI and scanner output as triage. Reproduce findings manually before reporting.\n'
+    } > "$index_file"
 }
 
 print_summary() {
@@ -1288,40 +1354,37 @@ print_summary() {
     stat_line "Live hosts" "$(count_lines raw/authsubs.txt)"
     stat_line "Non-live hosts" "$(count_lines raw/unauthsubs.txt)"
     stat_line "URLs collected" "$(count_lines raw/urls.txt)"
-    stat_line "URL disclosures" "$(count_lines reports/url_info_disclosure.txt)"
-    stat_line "Smart files" "$(count_json_findings reports/smart_sensitive_files.json)"
-    stat_line "Smart URL secrets" "$(count_json_findings reports/smart_secret_urls.json)"
-    stat_line "Confirmed findings" "$(count_json_findings reports/confirmed_findings.json)"
+    stat_line "URL disclosures" "$(count_lines reports/urls/url_info_disclosure.txt)"
+    stat_line "Smart files" "$(count_json_findings reports/urls/smart_sensitive_files.json)"
+    stat_line "Smart URL secrets" "$(count_json_findings reports/urls/smart_secret_urls.json)"
+    stat_line "Confirmed findings" "$(count_json_findings reports/findings/confirmed_findings.json)"
     stat_line "Live JS files" "$(count_lines raw/authjs_files.txt)"
     stat_line "Live JSON files" "$(count_lines raw/authjson_files.txt)"
-    stat_line "Generic API keys" "$(count_json_findings reports/generic_api_keys.json)"
-    stat_line "Genuine leaks" "$(count_json_findings reports/genuine_leaks.json)"
-    stat_line "JS vuln indicators" "$(count_json_findings reports/js_vulnerability_findings.json)"
-    stat_line "Nuclei findings" "$(count_jsonl_findings reports/nuclei_findings.jsonl)"
-    stat_line "Potential URL vulns" "$(count_jsonl_findings reports/nuclei_potential_url_findings.jsonl)"
-    stat_line "TLS records" "$(count_jsonl_findings reports/tls_findings.jsonl)"
+    stat_line "Generic API keys" "$(count_json_findings reports/js/generic_api_keys.json)"
+    stat_line "Genuine leaks" "$(count_json_findings reports/js/genuine_leaks.json)"
+    stat_line "JS vuln indicators" "$(count_json_findings reports/js/js_vulnerability_findings.json)"
+    stat_line "Nuclei findings" "$(count_jsonl_findings reports/pd/nuclei_findings.jsonl)"
+    stat_line "Potential URL vulns" "$(count_jsonl_findings reports/pd/nuclei_potential_url_findings.jsonl)"
+    stat_line "TLS records" "$(count_jsonl_findings reports/pd/tls_findings.jsonl)"
     if [ "$AI_ENABLED" = "true" ]; then
-        stat_line "AI-ranked findings" "$(count_json_findings reports/ai_findings.json)"
+        stat_line "AI-ranked findings" "$(count_json_findings reports/ai/ai_findings.json)"
     fi
 
     printf '\n%b%s%b\n' "$BOLD" "Result files" "$RESET"
     stat_line "Directory" "recon_$domain"
+    stat_line "Start here" "START_HERE.md"
     stat_line "Raw data" "raw/"
     stat_line "Reports" "reports/"
     stat_line "Evidence" "evidence/"
-    stat_line "Smart files" "reports/smart_sensitive_files.json"
-    stat_line "Smart URL secrets" "reports/smart_secret_urls.json"
-    stat_line "Nuclei" "reports/nuclei_findings.jsonl"
-    stat_line "Confirmed" "reports/confirmed_findings.json"
-    stat_line "Validator summary" "reports/confirmed_findings_summary.txt"
-    stat_line "Potential nuclei" "reports/nuclei_potential_url_findings.jsonl"
-    stat_line "Potential URLs" "reports/potential_vuln_urls.txt"
-    stat_line "TLS" "reports/tls_findings.jsonl"
-    stat_line "JS leaks" "reports/genuine_leaks.json"
+    stat_line "Confirmed" "reports/findings/confirmed_findings.json"
+    stat_line "URL reports" "reports/urls/"
+    stat_line "JS reports" "reports/js/"
+    stat_line "PD reports" "reports/pd/"
+    stat_line "Candidates" "reports/candidates/"
     stat_line "JS map" "evidence/downloaded_js_map.txt"
     if [ "$AI_ENABLED" = "true" ]; then
-        stat_line "AI report" "reports/ai_summary.md"
-        stat_line "AI context" "reports/ai_context.json"
+        stat_line "AI report" "reports/ai/ai_summary.md"
+        stat_line "AI context" "reports/ai/ai_context.json"
     fi
 }
 
@@ -1405,6 +1468,7 @@ recon() {
 
     organize_output
     run_ai_triage "$1"
+    write_result_index "$1"
     print_summary "$1"
     printf '\n'
     success "Recon complete."
