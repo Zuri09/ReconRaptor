@@ -1,15 +1,30 @@
 #!/bin/bash
 
-# Colors. Use printf-friendly ANSI escapes so shells do not print "\e[32m" literally.
-ESC=$(printf '\033')
-RED="${ESC}[31m"
-GREEN="${ESC}[32m"
-CYAN="${ESC}[36m"
-YELLOW="${ESC}[33m"
-BLUE="${ESC}[34m"
-BOLD="${ESC}[1m"
-DIM="${ESC}[2m"
-RESET="${ESC}[0m"
+# Terminal UI. Use printf-friendly ANSI escapes so shells do not print "\e[32m" literally.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    ESC=$(printf '\033')
+    RED="${ESC}[31m"
+    GREEN="${ESC}[32m"
+    CYAN="${ESC}[36m"
+    YELLOW="${ESC}[33m"
+    BLUE="${ESC}[34m"
+    MAGENTA="${ESC}[35m"
+    BOLD="${ESC}[1m"
+    DIM="${ESC}[2m"
+    RESET="${ESC}[0m"
+else
+    RED=""
+    GREEN=""
+    CYAN=""
+    YELLOW=""
+    BLUE=""
+    MAGENTA=""
+    BOLD=""
+    DIM=""
+    RESET=""
+fi
+
+SECTION_INDEX=0
 MAX_MATCHES_PER_PATTERN=50
 MAX_VALIDATION_TARGETS="${MAX_VALIDATION_TARGETS:-300}"
 VALIDATOR_PARALLELISM="${VALIDATOR_PARALLELISM:-12}"
@@ -24,40 +39,77 @@ info() {
     printf '%b%s%b\n' "$1" "$2" "$RESET"
 }
 
+terminal_width() {
+    cols=$(tput cols 2>/dev/null || printf '80')
+    [ "$cols" -gt 96 ] && cols=96
+    [ "$cols" -lt 60 ] && cols=60
+    printf '%s' "$cols"
+}
+
+repeat_char() {
+    char="$1"
+    count="$2"
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        printf '%s' "$char"
+        i=$((i + 1))
+    done
+}
+
 line() {
-    printf '%b%s%b\n' "$DIM" "------------------------------------------------------------" "$RESET"
+    printf '%b' "$DIM"
+    repeat_char "-" "$(terminal_width)"
+    printf '%b\n' "$RESET"
 }
 
 section() {
+    SECTION_INDEX=$((SECTION_INDEX + 1))
     printf '\n'
     line
-    printf '%b%s%b %b%s%b\n' "$CYAN" ">>" "$RESET" "$BOLD" "$1" "$RESET"
+    printf '%b[%02d]%b %b%s%b\n' "$CYAN" "$SECTION_INDEX" "$RESET" "$BOLD" "$1" "$RESET"
     line
 }
 
 step() {
-    printf '%b[%s]%b %s\n' "$BLUE" ".." "$RESET" "$1"
+    printf '  %b[RUN ]%b %s\n' "$BLUE" "$RESET" "$1"
 }
 
 success() {
-    printf '%b[%s]%b %s\n' "$GREEN" "OK" "$RESET" "$1"
+    printf '  %b[DONE]%b %s\n' "$GREEN" "$RESET" "$1"
 }
 
 warn() {
-    printf '%b[%s]%b %s\n' "$YELLOW" "!!" "$RESET" "$1"
+    printf '  %b[WARN]%b %s\n' "$YELLOW" "$RESET" "$1"
 }
 
 fail() {
-    printf '%b[%s]%b %s\n' "$RED" "NO" "$RESET" "$1"
+    printf '  %b[FAIL]%b %s\n' "$RED" "$RESET" "$1"
 }
 
 stat_line() {
-    printf '  %b%-22s%b %s\n' "$DIM" "$1" "$RESET" "$2"
+    printf '  %b%-26s%b %s\n' "$DIM" "$1" "$RESET" "$2"
+}
+
+summary_group() {
+    printf '\n  %b%s%b\n' "$CYAN" "$1" "$RESET"
+}
+
+summary_row() {
+    label="$1"
+    value="$2"
+    printf '    %-28s %b%8s%b\n' "$label" "$BOLD" "$value" "$RESET"
+}
+
+summary_path() {
+    label="$1"
+    path="$2"
+    printf '    %-18s %b%s%b\n' "$label" "$BOLD" "$path" "$RESET"
 }
 
 banner() {
-printf '%b' "$CYAN"
-cat << "EOF"
+    line
+    printf '%b' "$CYAN"
+    cat << "EOF"
 
     ____                        ____              __
    / __ \___  _________  ____  / __ \____ _____  / /_____  _____
@@ -67,9 +119,25 @@ cat << "EOF"
                                         /_/
 
 EOF
-printf '%b' "$RESET"
-printf '%b%s%b\n' "$BOLD" "  ReconRaptor AI - AI-powered recon triage for authorized testing" "$RESET"
-printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Confirmed vulns | Local/Cloud AI | Discord reports" "$RESET"
+    printf '%b' "$RESET"
+    printf '  %bReconRaptor AI%b\n' "$BOLD" "$RESET"
+    printf '  %bAuthorized recon, validation, JS analysis, and AI-powered triage%b\n' "$DIM" "$RESET"
+    printf '  %bModules:%b subdomains / URLs / JS secrets / validators / Nuclei / AI / Discord\n' "$DIM" "$RESET"
+    line
+}
+
+print_run_profile() {
+    domain="$1"
+    printf '  %bRun profile%b\n' "$CYAN" "$RESET"
+    stat_line "Target" "$domain"
+    stat_line "Output directory" "recon_$domain"
+    stat_line "AI mode" "$AI_ENABLED"
+    if [ "$AI_ENABLED" = "true" ]; then
+        stat_line "AI provider" "$AI_PROVIDER"
+        stat_line "AI model" "$OLLAMA_MODEL / $OPENAI_MODEL"
+    fi
+    stat_line "Validator parallelism" "$VALIDATOR_PARALLELISM"
+    stat_line "Candidate cap" "$MAX_VALIDATION_TARGETS"
 }
 
 # Requirements check
@@ -1346,45 +1414,65 @@ write_result_index() {
 
 print_summary() {
     domain="$1"
+    subdomains_count=$(count_lines raw/subdomains.txt)
+    resolved_count=$(count_lines raw/resolved_subdomains.txt)
+    live_count=$(count_lines raw/authsubs.txt)
+    non_live_count=$(count_lines raw/unauthsubs.txt)
+    urls_count=$(count_lines raw/urls.txt)
+    url_disclosures_count=$(count_lines reports/urls/url_info_disclosure.txt)
+    smart_files_count=$(count_json_findings reports/urls/smart_sensitive_files.json)
+    smart_url_secrets_count=$(count_json_findings reports/urls/smart_secret_urls.json)
+    confirmed_count=$(count_json_findings reports/findings/confirmed_findings.json)
+    live_js_count=$(count_lines raw/authjs_files.txt)
+    live_json_count=$(count_lines raw/authjson_files.txt)
+    generic_keys_count=$(count_json_findings reports/js/generic_api_keys.json)
+    genuine_leaks_count=$(count_json_findings reports/js/genuine_leaks.json)
+    js_indicators_count=$(count_json_findings reports/js/js_vulnerability_findings.json)
+    nuclei_count=$(count_jsonl_findings reports/pd/nuclei_findings.jsonl)
+    potential_nuclei_count=$(count_jsonl_findings reports/pd/nuclei_potential_url_findings.jsonl)
+    tls_count=$(count_jsonl_findings reports/pd/tls_findings.jsonl)
 
     section "Scan Summary"
-    stat_line "Target" "$domain"
-    stat_line "Subdomains" "$(count_lines raw/subdomains.txt)"
-    stat_line "Resolved domains" "$(count_lines raw/resolved_subdomains.txt)"
-    stat_line "Live hosts" "$(count_lines raw/authsubs.txt)"
-    stat_line "Non-live hosts" "$(count_lines raw/unauthsubs.txt)"
-    stat_line "URLs collected" "$(count_lines raw/urls.txt)"
-    stat_line "URL disclosures" "$(count_lines reports/urls/url_info_disclosure.txt)"
-    stat_line "Smart files" "$(count_json_findings reports/urls/smart_sensitive_files.json)"
-    stat_line "Smart URL secrets" "$(count_json_findings reports/urls/smart_secret_urls.json)"
-    stat_line "Confirmed findings" "$(count_json_findings reports/findings/confirmed_findings.json)"
-    stat_line "Live JS files" "$(count_lines raw/authjs_files.txt)"
-    stat_line "Live JSON files" "$(count_lines raw/authjson_files.txt)"
-    stat_line "Generic API keys" "$(count_json_findings reports/js/generic_api_keys.json)"
-    stat_line "Genuine leaks" "$(count_json_findings reports/js/genuine_leaks.json)"
-    stat_line "JS vuln indicators" "$(count_json_findings reports/js/js_vulnerability_findings.json)"
-    stat_line "Nuclei findings" "$(count_jsonl_findings reports/pd/nuclei_findings.jsonl)"
-    stat_line "Potential URL vulns" "$(count_jsonl_findings reports/pd/nuclei_potential_url_findings.jsonl)"
-    stat_line "TLS records" "$(count_jsonl_findings reports/pd/tls_findings.jsonl)"
+
+    summary_group "Target coverage"
+    summary_row "Subdomains found" "$subdomains_count"
+    summary_row "Resolved domains" "$resolved_count"
+    summary_row "Live hosts" "$live_count"
+    summary_row "Non-live hosts" "$non_live_count"
+    summary_row "URLs collected" "$urls_count"
+
+    summary_group "Finding signals"
+    summary_row "Confirmed findings" "$confirmed_count"
+    summary_row "URL disclosure leads" "$url_disclosures_count"
+    summary_row "Sensitive file matches" "$smart_files_count"
+    summary_row "Secret URLs" "$smart_url_secrets_count"
+    summary_row "Nuclei findings" "$nuclei_count"
+    summary_row "Focused Nuclei findings" "$potential_nuclei_count"
+
+    summary_group "JavaScript analysis"
+    summary_row "Live JS files" "$live_js_count"
+    summary_row "Live JSON files" "$live_json_count"
+    summary_row "Generic API keys" "$generic_keys_count"
+    summary_row "Genuine leaks" "$genuine_leaks_count"
+    summary_row "Client-side indicators" "$js_indicators_count"
+    summary_row "TLS records" "$tls_count"
+
     if [ "$AI_ENABLED" = "true" ]; then
-        stat_line "AI-ranked findings" "$(count_json_findings reports/ai/ai_findings.json)"
+        summary_group "AI triage"
+        summary_row "AI-ranked findings" "$(count_json_findings reports/ai/ai_findings.json)"
     fi
 
-    printf '\n%b%s%b\n' "$BOLD" "Result files" "$RESET"
-    stat_line "Directory" "recon_$domain"
-    stat_line "Start here" "START_HERE.md"
-    stat_line "Raw data" "raw/"
-    stat_line "Reports" "reports/"
-    stat_line "Evidence" "evidence/"
-    stat_line "Confirmed" "reports/findings/confirmed_findings.json"
-    stat_line "URL reports" "reports/urls/"
-    stat_line "JS reports" "reports/js/"
-    stat_line "PD reports" "reports/pd/"
-    stat_line "Candidates" "reports/candidates/"
-    stat_line "JS map" "evidence/downloaded_js_map.txt"
+    summary_group "Where to go next"
+    summary_path "Directory" "recon_$domain"
+    summary_path "Start here" "START_HERE.md"
+    summary_path "Confirmed" "reports/findings/confirmed_findings.json"
+    summary_path "URL reports" "reports/urls/"
+    summary_path "JS reports" "reports/js/"
+    summary_path "PD reports" "reports/pd/"
+    summary_path "Candidates" "reports/candidates/"
+    summary_path "Evidence" "evidence/"
     if [ "$AI_ENABLED" = "true" ]; then
-        stat_line "AI report" "reports/ai/ai_summary.md"
-        stat_line "AI context" "reports/ai/ai_context.json"
+        summary_path "AI report" "reports/ai/ai_summary.md"
     fi
 }
 
@@ -1393,6 +1481,7 @@ recon() {
     section "Target: $1"
     mkdir -p "recon_$1"
     cd "recon_$1" || exit 1
+    print_run_profile "$1"
 
     section "Subdomain Discovery"
     step "Finding subdomains"
@@ -1501,8 +1590,19 @@ upload_discord() {
 }
 
 usage() {
-    printf 'Usage: %s -d <domain> [-w <discord_webhook>] [--ai] [--ai-provider auto|openai|ollama|rules] [--ai-model <model>]\n' "$0"
-    printf 'ReconRaptor AI: recon, validation, and AI-powered finding triage.\n'
+    banner
+    printf '\n%bUsage%b\n' "$BOLD" "$RESET"
+    printf '  %s -d <domain> [options]\n\n' "$0"
+    printf '%bOptions%b\n' "$BOLD" "$RESET"
+    printf '  %-30s %s\n' '-d, --domain <domain>' 'Target domain to scan'
+    printf '  %-30s %s\n' '-w, --webhook <url>' 'Upload the final zip to Discord'
+    printf '  %-30s %s\n' '--ai' 'Enable AI-powered triage'
+    printf '  %-30s %s\n' '--ai-provider <mode>' 'auto, openai, ollama, or rules'
+    printf '  %-30s %s\n' '--ai-model <model>' 'Model name for OpenAI or Ollama'
+    printf '  %-30s %s\n' '-h, --help' 'Show this help screen'
+    printf '\n%bExamples%b\n' "$BOLD" "$RESET"
+    printf '  %s -d example.com\n' "$0"
+    printf '  %s -d example.com --ai --ai-provider ollama --ai-model llama3.2:3b\n' "$0"
 }
 
 # Args parsing
