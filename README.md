@@ -18,6 +18,7 @@ The tool is designed to produce practical files you can review quickly after a s
 - URL-based information-disclosure checks
 - Smart URL filtering for sensitive files and secret-looking URL patterns
 - Confirmed validators for exposed files, open redirects, CORS, GraphQL, public cloud storage, and subdomain takeover
+- Optional AI triage for ranking findings and creating a report-ready summary
 - JavaScript download and analysis
 - Separate reports for generic API key candidates, higher-confidence leaks, Gitleaks findings, and JS vulnerability indicators
 - Tuned concurrency for faster scans while keeping validation focused
@@ -59,6 +60,24 @@ Run a scan:
 ./reconraptor.sh -d example.com
 ```
 
+Run a scan with AI triage:
+
+```bash
+./reconraptor.sh -d example.com --ai
+```
+
+Use OpenAI triage:
+
+```bash
+OPENAI_API_KEY="your_api_key" ./reconraptor.sh -d example.com --ai --ai-provider openai
+```
+
+Use a local Ollama model:
+
+```bash
+./reconraptor.sh -d example.com --ai --ai-provider ollama --ai-model llama3.1
+```
+
 Send results to a Discord webhook:
 
 ```bash
@@ -92,6 +111,9 @@ recon_example.com/
 │   ├── confirmed_findings.json
 │   ├── confirmed_findings.jsonl
 │   ├── confirmed_findings_summary.txt
+│   ├── ai_context.json
+│   ├── ai_findings.json
+│   ├── ai_summary.md
 │   ├── subdomain_takeover_findings.json
 │   ├── sensitive_file_candidates.txt
 │   ├── open_redirect_candidates.txt
@@ -160,6 +182,30 @@ The default values are conservative enough for bug bounty use:
 - `MAX_VALIDATION_TARGETS=300`
 - `VALIDATOR_PARALLELISM=12`
 - `CURL_TIMEOUT=12`
+
+## AI Triage
+
+AI triage is optional and disabled by default. When enabled with `--ai`, ReconRaptor creates:
+
+- `reports/ai_context.json`: sanitized scan context used for AI analysis
+- `reports/ai_findings.json`: locally ranked findings with severity, score, confidence, and next steps
+- `reports/ai_summary.md`: a concise triage summary for review and reporting
+
+The AI context omits raw secret-like values, raw request/response bodies, and downloaded JavaScript content. It keeps metadata such as finding type, URL, confidence, status, evidence summaries, hashes, and counts.
+
+Provider modes:
+
+- `--ai-provider auto`: uses OpenAI when `OPENAI_API_KEY` is set, otherwise tries Ollama, otherwise keeps the local rule-based summary.
+- `--ai-provider openai`: sends the sanitized context to the OpenAI Responses API.
+- `--ai-provider ollama`: sends the sanitized context to a local Ollama server.
+- `--ai-provider rules`: never sends data anywhere; uses local scoring and templates only.
+
+Useful environment variables:
+
+- `OPENAI_API_KEY`: required for OpenAI mode
+- `OPENAI_MODEL`: OpenAI model, default `gpt-5.6-luna`
+- `OLLAMA_MODEL`: local Ollama model, default `llama3.1`
+- `AI_MAX_FINDINGS`: maximum findings included in AI context, default `60`
 
 ## JavaScript Analysis
 

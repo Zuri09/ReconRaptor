@@ -14,6 +14,11 @@ MAX_MATCHES_PER_PATTERN=50
 MAX_VALIDATION_TARGETS="${MAX_VALIDATION_TARGETS:-300}"
 VALIDATOR_PARALLELISM="${VALIDATOR_PARALLELISM:-12}"
 CURL_TIMEOUT="${CURL_TIMEOUT:-12}"
+AI_ENABLED="${AI_ENABLED:-false}"
+AI_PROVIDER="${AI_PROVIDER:-auto}"
+OPENAI_MODEL="${OPENAI_MODEL:-gpt-5.6-luna}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.1}"
+AI_MAX_FINDINGS="${AI_MAX_FINDINGS:-60}"
 
 info() {
     printf '%b%s%b\n' "$1" "$2" "$RESET"
@@ -63,7 +68,7 @@ cat << "EOF"
 
 EOF
 printf '%b' "$RESET"
-printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Vuln checks | Discord reports" "$RESET"
+printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Vuln checks | AI triage | Discord reports" "$RESET"
 }
 
 # Requirements check
@@ -787,6 +792,451 @@ count_jsonl_findings() {
     count_lines "$1"
 }
 
+run_ai_triage() {
+    domain="$1"
+
+    if [ "$AI_ENABLED" != "true" ]; then
+        return
+    fi
+
+    section "AI Triage"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 is required for AI triage context generation."
+        return
+    fi
+
+    mkdir -p reports
+    create_ai_context "$domain" "$AI_MAX_FINDINGS" "reports/ai_context.json"
+    create_rule_based_ai_reports "$domain" "reports/ai_context.json" "reports/ai_findings.json" "reports/ai_summary.md"
+
+    case "$AI_PROVIDER" in
+        openai)
+            run_openai_triage "$domain" || warn "OpenAI triage failed; kept local AI summary."
+            ;;
+        ollama|local)
+            run_ollama_triage "$domain" || warn "Ollama triage failed; kept local AI summary."
+            ;;
+        auto)
+            if [ -n "$OPENAI_API_KEY" ]; then
+                run_openai_triage "$domain" || warn "OpenAI triage failed; kept local AI summary."
+            elif command -v ollama >/dev/null 2>&1; then
+                run_ollama_triage "$domain" || warn "Ollama triage failed; kept local AI summary."
+            else
+                success "Local AI-style triage saved to reports/ai_summary.md"
+            fi
+            ;;
+        rules|rule|offline)
+            success "Local AI-style triage saved to reports/ai_summary.md"
+            ;;
+        *)
+            warn "Unknown AI provider '$AI_PROVIDER'. Kept local AI summary."
+            ;;
+    esac
+}
+
+create_ai_context() {
+    domain="$1"
+    max_findings="$2"
+    output_file="$3"
+
+    python3 - "$domain" "$max_findings" "$output_file" << 'PY'
+import json
+import os
+import re
+import sys
+
+domain, max_findings, output_file = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+reports_dir = "reports"
+
+DROP_KEYS = {
+    "match", "secret", "raw", "raw_request", "raw_response", "request", "response",
+    "curl-command", "curl_command", "extracted-results", "extracted_results",
+    "matcher-status", "matcher_status", "template-url", "template_url",
+}
+
+SENSITIVE_QUERY_RE = re.compile(
+    r"(?i)([?&][^=\s&]*(?:token|secret|password|passwd|pwd|api[_-]?key|apikey|client[_-]?secret|session|sid|jwt)[^=\s&]*=)[^&#\s]+"
+)
+SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)((?:token|secret|password|passwd|pwd|api[_-]?key|apikey|client[_-]?secret|jwt)[\"']?\s*[:=]\s*[\"']?)[^\"'\s,}]+"
+)
+
+def sanitize_text(value):
+    value = SENSITIVE_QUERY_RE.sub(r"\1[omitted]", value)
+    value = SENSITIVE_ASSIGNMENT_RE.sub(r"\1[omitted]", value)
+    if len(value) > 700:
+        value = value[:700] + "...[truncated]"
+    return value
+
+def safe_value(value):
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in DROP_KEYS or any(token in lowered for token in ("secret", "password", "token", "apikey", "api_key")):
+                if "hash" in lowered or "length" in lowered:
+                    cleaned[key] = item
+                else:
+                    cleaned[key] = "[omitted]"
+            else:
+                cleaned[key] = safe_value(item)
+        return cleaned
+    if isinstance(value, list):
+        return [safe_value(item) for item in value[:max_findings]]
+    if isinstance(value, str):
+        return sanitize_text(value)
+    return value
+
+def load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            data = json.load(handle)
+    except Exception:
+        return []
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return [safe_value(item) for item in data[:max_findings]]
+    return [safe_value(data)]
+
+def load_jsonl(path):
+    rows = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(safe_value(json.loads(line)))
+                except Exception:
+                    rows.append({"line": sanitize_text(line)})
+                if len(rows) >= max_findings:
+                    break
+    except FileNotFoundError:
+        pass
+    return rows
+
+def count_lines(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            return sum(1 for _ in handle)
+    except FileNotFoundError:
+        return 0
+
+def sample_text(path, limit=25):
+    rows = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    rows.append(sanitize_text(line))
+                if len(rows) >= limit:
+                    break
+    except FileNotFoundError:
+        pass
+    return rows
+
+context = {
+    "target": domain,
+    "note": "Secret-like values, raw requests, raw responses, and long bodies are omitted before AI triage.",
+    "counts": {
+        "subdomains": count_lines("raw/subdomains.txt"),
+        "resolved_domains": count_lines("raw/resolved_subdomains.txt"),
+        "live_hosts": count_lines("raw/authsubs.txt"),
+        "urls": count_lines("raw/urls.txt"),
+        "live_js": count_lines("raw/authjs_files.txt"),
+        "live_json": count_lines("raw/authjson_files.txt"),
+    },
+    "confirmed_findings": load_json(os.path.join(reports_dir, "confirmed_findings.json")),
+    "nuclei_findings": load_jsonl(os.path.join(reports_dir, "nuclei_findings.jsonl")),
+    "nuclei_potential_url_findings": load_jsonl(os.path.join(reports_dir, "nuclei_potential_url_findings.jsonl")),
+    "js_vulnerability_indicators": load_json(os.path.join(reports_dir, "js_vulnerability_findings.json")),
+    "genuine_leak_metadata": load_json(os.path.join(reports_dir, "genuine_leaks.json")),
+    "generic_key_metadata": load_json(os.path.join(reports_dir, "generic_api_keys.json")),
+    "smart_sensitive_files": load_json(os.path.join(reports_dir, "smart_sensitive_files.json")),
+    "smart_secret_urls": load_json(os.path.join(reports_dir, "smart_secret_urls.json")),
+    "url_info_disclosure_samples": sample_text(os.path.join(reports_dir, "url_info_disclosure.txt")),
+}
+
+with open(output_file, "w", encoding="utf-8") as handle:
+    json.dump(context, handle, indent=2)
+    handle.write("\n")
+PY
+}
+
+create_rule_based_ai_reports() {
+    domain="$1"
+    context_file="$2"
+    findings_file="$3"
+    summary_file="$4"
+
+    python3 - "$domain" "$context_file" "$findings_file" "$summary_file" << 'PY'
+import json
+import sys
+from collections import Counter
+
+domain, context_file, findings_file, summary_file = sys.argv[1:5]
+
+with open(context_file, "r", encoding="utf-8") as handle:
+    context = json.load(handle)
+
+weights = {
+    "subdomain_takeover": 100,
+    "open_redirect": 82,
+    "cors_origin_reflection_with_credentials": 78,
+    "graphql_introspection_enabled": 76,
+    "public_cloud_bucket_listing": 88,
+    "exposed_sensitive_file": 86,
+}
+
+def severity(score):
+    if score >= 85:
+        return "critical"
+    if score >= 70:
+        return "high"
+    if score >= 45:
+        return "medium"
+    return "low"
+
+ranked = []
+for item in context.get("confirmed_findings", []):
+    kind = item.get("type", "finding")
+    score = weights.get(kind, 60)
+    if item.get("confidence") == "confirmed":
+        score += 8
+    ranked.append({
+        "title": kind.replace("_", " ").title(),
+        "type": kind,
+        "severity": severity(score),
+        "score": min(score, 100),
+        "confidence": item.get("confidence", "unknown"),
+        "source_url": item.get("source_url", ""),
+        "evidence": item.get("evidence", ""),
+        "recommended_next_step": "Manually reproduce the finding, capture request/response proof, and verify program scope before reporting."
+    })
+
+for item in context.get("nuclei_findings", [])[:20]:
+    info = item.get("info", {}) if isinstance(item, dict) else {}
+    sev = str(info.get("severity", "medium")).lower()
+    base = {"critical": 88, "high": 75, "medium": 55, "low": 35}.get(sev, 45)
+    ranked.append({
+        "title": info.get("name", item.get("template-id", "Nuclei finding")),
+        "type": "nuclei",
+        "severity": sev,
+        "score": base,
+        "confidence": "template-match",
+        "source_url": item.get("matched-at", item.get("host", "")),
+        "evidence": item.get("template-id", ""),
+        "recommended_next_step": "Validate the template result manually and collect clean reproduction evidence."
+    })
+
+ranked = sorted(ranked, key=lambda item: item["score"], reverse=True)
+with open(findings_file, "w", encoding="utf-8") as handle:
+    json.dump(ranked, handle, indent=2)
+    handle.write("\n")
+
+counts = context.get("counts", {})
+type_counts = Counter(item["type"] for item in ranked)
+
+lines = [
+    f"# AI Triage Summary for {domain}",
+    "",
+    "## Scan Shape",
+    f"- Live hosts: {counts.get('live_hosts', 0)}",
+    f"- URLs collected: {counts.get('urls', 0)}",
+    f"- Live JavaScript files: {counts.get('live_js', 0)}",
+    f"- Confirmed or high-signal findings: {len(ranked)}",
+    "",
+    "## Highest Priority Findings",
+]
+
+if ranked:
+    for item in ranked[:10]:
+        lines.append(f"- {item['severity'].upper()} | {item['title']} | {item.get('source_url', '')}")
+        if item.get("evidence"):
+            lines.append(f"  Evidence: {item['evidence']}")
+else:
+    lines.append("- No confirmed findings were available for AI triage.")
+
+lines.extend([
+    "",
+    "## Finding Groups",
+])
+
+if type_counts:
+    for kind, count in type_counts.most_common():
+        lines.append(f"- {kind}: {count}")
+else:
+    lines.append("- No groups available.")
+
+lines.extend([
+    "",
+    "## Suggested Manual Testing",
+    "- Reproduce confirmed findings from a clean browser or curl session.",
+    "- Prioritize exposed files, takeover, cloud storage, GraphQL introspection, and CORS with credentials.",
+    "- Treat generic JS indicators as leads unless a validator or manual test confirms impact.",
+    "",
+    "## Data Handling",
+    "- This local summary was generated from ai_context.json, which omits raw secret-like values and large bodies.",
+])
+
+with open(summary_file, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(lines) + "\n")
+PY
+}
+
+run_openai_triage() {
+    domain="$1"
+
+    if [ -z "$OPENAI_API_KEY" ]; then
+        warn "OPENAI_API_KEY is not set. Skipping OpenAI triage."
+        return 1
+    fi
+
+    step "Running OpenAI triage with $OPENAI_MODEL"
+    build_openai_payload "$domain" "reports/ai_context.json" "reports/ai_openai_request.json"
+
+    if ! curl -fsS https://api.openai.com/v1/responses \
+        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d @reports/ai_openai_request.json \
+        -o reports/ai_openai_response.json; then
+        return 1
+    fi
+
+    extract_ai_text "reports/ai_openai_response.json" "reports/ai_summary.md"
+    success "OpenAI triage saved to reports/ai_summary.md"
+}
+
+build_openai_payload() {
+    domain="$1"
+    context_file="$2"
+    output_file="$3"
+
+    python3 - "$domain" "$context_file" "$output_file" "$OPENAI_MODEL" << 'PY'
+import json
+import sys
+
+domain, context_file, output_file, model = sys.argv[1:5]
+
+with open(context_file, "r", encoding="utf-8") as handle:
+    context = json.load(handle)
+
+prompt = f"""You are helping triage an authorized security recon scan for {domain}.
+
+Use only the sanitized JSON context below. Do not invent findings. Do not ask to exploit anything.
+Create a concise bug-bounty triage report in Markdown with:
+1. Executive summary
+2. Top confirmed findings ranked by severity
+3. Likely false positives or weak leads
+4. Duplicate/root-cause grouping
+5. Manual reproduction checklist
+6. Report-ready wording for the highest-impact confirmed issues
+
+Sanitized context:
+{json.dumps(context, indent=2)}
+"""
+
+payload = {
+    "model": model,
+    "input": prompt,
+    "max_output_tokens": 2500
+}
+
+with open(output_file, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+    handle.write("\n")
+PY
+}
+
+extract_ai_text() {
+    response_file="$1"
+    output_file="$2"
+
+    python3 - "$response_file" "$output_file" << 'PY'
+import json
+import sys
+
+response_file, output_file = sys.argv[1:3]
+with open(response_file, "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+text = data.get("output_text", "")
+if not text:
+    parts = []
+    for item in data.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                parts.append(content["text"])
+    text = "\n".join(parts)
+
+if not text and data.get("error"):
+    text = "# AI Triage Failed\n\n" + json.dumps(data["error"], indent=2)
+
+with open(output_file, "w", encoding="utf-8") as handle:
+    handle.write(text.strip() + "\n")
+PY
+}
+
+run_ollama_triage() {
+    domain="$1"
+
+    if ! command -v ollama >/dev/null 2>&1; then
+        warn "ollama is not installed. Skipping local model triage."
+        return 1
+    fi
+
+    step "Running local Ollama triage with $OLLAMA_MODEL"
+    build_ollama_payload "$domain" "reports/ai_context.json" "reports/ai_ollama_request.json"
+
+    if ! curl -fsS http://127.0.0.1:11434/api/generate \
+        -H "Content-Type: application/json" \
+        -d @reports/ai_ollama_request.json \
+        -o reports/ai_ollama_response.json; then
+        return 1
+    fi
+
+    python3 - "reports/ai_ollama_response.json" "reports/ai_summary.md" << 'PY'
+import json
+import sys
+
+response_file, output_file = sys.argv[1:3]
+with open(response_file, "r", encoding="utf-8", errors="ignore") as handle:
+    data = json.load(handle)
+with open(output_file, "w", encoding="utf-8") as handle:
+    handle.write(data.get("response", "").strip() + "\n")
+PY
+    success "Ollama triage saved to reports/ai_summary.md"
+}
+
+build_ollama_payload() {
+    domain="$1"
+    context_file="$2"
+    output_file="$3"
+
+    python3 - "$domain" "$context_file" "$output_file" "$OLLAMA_MODEL" << 'PY'
+import json
+import sys
+
+domain, context_file, output_file, model = sys.argv[1:5]
+with open(context_file, "r", encoding="utf-8") as handle:
+    context = json.load(handle)
+
+prompt = f"""Triage this authorized recon scan for {domain}. Use only this sanitized context.
+Rank confirmed findings, call out likely false positives, group duplicates, and give concise manual validation steps.
+
+{json.dumps(context, indent=2)}
+"""
+
+with open(output_file, "w", encoding="utf-8") as handle:
+    json.dump({"model": model, "prompt": prompt, "stream": False}, handle)
+    handle.write("\n")
+PY
+}
+
 organize_output() {
     mkdir -p raw reports evidence
 
@@ -849,6 +1299,9 @@ print_summary() {
     stat_line "Nuclei findings" "$(count_jsonl_findings reports/nuclei_findings.jsonl)"
     stat_line "Potential URL vulns" "$(count_jsonl_findings reports/nuclei_potential_url_findings.jsonl)"
     stat_line "TLS records" "$(count_jsonl_findings reports/tls_findings.jsonl)"
+    if [ "$AI_ENABLED" = "true" ]; then
+        stat_line "AI findings" "$(count_json_findings reports/ai_findings.json)"
+    fi
 
     printf '\n%b%s%b\n' "$BOLD" "Result files" "$RESET"
     stat_line "Directory" "recon_$domain"
@@ -865,6 +1318,10 @@ print_summary() {
     stat_line "TLS" "reports/tls_findings.jsonl"
     stat_line "JS leaks" "reports/genuine_leaks.json"
     stat_line "JS map" "evidence/downloaded_js_map.txt"
+    if [ "$AI_ENABLED" = "true" ]; then
+        stat_line "AI summary" "reports/ai_summary.md"
+        stat_line "AI context" "reports/ai_context.json"
+    fi
 }
 
 # Recon start
@@ -946,6 +1403,7 @@ recon() {
     run_confirmed_validators "$1"
 
     organize_output
+    run_ai_triage "$1"
     print_summary "$1"
     printf '\n'
     success "Recon complete."
@@ -977,22 +1435,55 @@ upload_discord() {
     fi
 }
 
+usage() {
+    printf 'Usage: %s -d <domain> [-w <discord_webhook>] [--ai] [--ai-provider auto|openai|ollama|rules] [--ai-model <model>]\n' "$0"
+}
+
 # Args parsing
 domain=""
 webhook=""
-while getopts ":d:w:" opt; do
-  case $opt in
-    d) domain="$OPTARG"
-    ;;
-    w) webhook="$OPTARG"
-    ;;
-    \?) echo "Usage: $0 -d <domain> [-w <discord_webhook>]"; exit 1
-    ;;
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d|--domain)
+        if [ -z "${2:-}" ]; then usage; exit 1; fi
+        domain="$2"
+        shift 2
+        ;;
+    -w|--webhook)
+        if [ -z "${2:-}" ]; then usage; exit 1; fi
+        webhook="$2"
+        shift 2
+        ;;
+    --ai)
+        AI_ENABLED="true"
+        shift
+        ;;
+    --ai-provider)
+        if [ -z "${2:-}" ]; then usage; exit 1; fi
+        AI_PROVIDER="$2"
+        shift 2
+        ;;
+    --ai-model)
+        if [ -z "${2:-}" ]; then usage; exit 1; fi
+        OPENAI_MODEL="$2"
+        OLLAMA_MODEL="$2"
+        shift 2
+        ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
   esac
 done
 
 if [ -z "$domain" ]; then
     fail "Please provide a domain using -d option."
+    usage
     exit 1
 fi
 
