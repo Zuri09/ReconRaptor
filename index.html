@@ -154,27 +154,19 @@
           <h2>Install from GitHub in seconds</h2>
         </div>
         <div class="mac-terminal" aria-label="macOS terminal installation commands">
-          <div class="terminal-topbar">
-            <div class="window-controls" aria-hidden="true">
-              <span class="control close"></span>
-              <span class="control minimize"></span>
-              <span class="control maximize"></span>
-            </div>
-            <span class="terminal-title">zuri09.github.io - ReconRaptor AI install</span>
+          <div class="window-controls" aria-hidden="true">
+            <span class="control close"></span>
+            <span class="control minimize"></span>
+            <span class="control maximize"></span>
           </div>
           <div class="terminal-body">
-            <p><span class="prompt">zuri@macbook</span><span class="path"> ~/tools</span> <span class="dollar">$</span> git clone https://github.com/Zuri09/ReconRaptor.git</p>
-            <p class="output">Cloning into 'ReconRaptor'...</p>
-            <p><span class="prompt">zuri@macbook</span><span class="path"> ~/tools</span> <span class="dollar">$</span> cd ReconRaptor</p>
-            <p><span class="prompt">zuri@macbook</span><span class="path"> ~/tools/ReconRaptor</span> <span class="dollar">$</span> chmod +x install.sh reconraptor.sh</p>
-            <p><span class="prompt">zuri@macbook</span><span class="path"> ~/tools/ReconRaptor</span> <span class="dollar">$</span> ./install.sh</p>
-            <p class="output">status: ProjectDiscovery tools, Gitleaks, and validators ready</p>
-            <p><span class="prompt">zuri@macbook</span><span class="path"> ~/tools/ReconRaptor</span> <span class="dollar">$</span> ./reconraptor.sh -d example.com --ai --ai-provider ollama</p>
-            <p class="next">next: open recon_example.com/START_HERE.md</p>
-          </div>
-          <div class="terminal-footer">
-            <span>Standard scan: <code>./reconraptor.sh -d example.com</code></span>
-            <span>Local AI setup: <code>./install.sh --with-ollama</code></span>
+            <p><span class="dollar">$</span> git clone https://github.com/Zuri09/ReconRaptor.git</p>
+            <p><span class="dollar">$</span> cd ReconRaptor &amp;&amp; chmod +x install.sh reconraptor.sh</p>
+            <p><span class="dollar">$</span> ./install.sh --with-ollama</p>
+            <p><span class="label">status:</span> install complete, ProjectDiscovery tools ready</p>
+            <p><span class="label muted-label">scan:</span> ./reconraptor.sh -d example.com --ai --ai-provider ollama</p>
+            <p><span class="label muted-label">output:</span> reports | evidence | START_HERE.md</p>
+            <p><span class="next">next:</span> open recon_example.com/START_HERE.md</p>
           </div>
         </div>
       </section>
