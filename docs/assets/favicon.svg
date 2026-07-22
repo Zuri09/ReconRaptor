@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ReconRaptor logo">
+  <rect width="64" height="64" rx="14" fill="#020b0f"/>
+  <rect x="3" y="3" width="58" height="58" rx="12" fill="none" stroke="#22d3ee" stroke-width="3"/>
+  <path d="M17 41V21h16c6 0 10 3 10 8 0 4-2 7-6 8l7 4H32l-6-4h-2v4h-7Zm7-10h8c2 0 4-1 4-3s-2-3-4-3h-8v6Z" fill="#22c55e"/>
+  <path d="M39 22h8l-6 6h-8l6-6Zm-3 10h8l-6 6h-8l6-6Z" fill="#d946ef"/>
+</svg>
