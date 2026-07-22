@@ -397,30 +397,22 @@ pre {
 
 .mac-terminal {
   overflow: hidden;
-  border: 1px solid rgba(34, 211, 238, 0.28);
-  background: #020811;
-  border-radius: 8px;
+  padding: clamp(28px, 4vw, 54px);
+  border: 2px solid rgba(34, 211, 238, 0.26);
+  background: #020b0f;
+  border-radius: 14px;
   box-shadow: 0 28px 90px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(34, 211, 238, 0.08);
-}
-
-.terminal-topbar {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) 96px;
-  align-items: center;
-  min-height: 54px;
-  padding: 0 20px;
-  border-bottom: 1px solid rgba(34, 211, 238, 0.18);
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(8, 17, 31, 0.98));
 }
 
 .window-controls {
   display: flex;
-  gap: 10px;
+  gap: 14px;
+  margin-bottom: clamp(34px, 5vw, 52px);
 }
 
 .control {
-  width: 15px;
-  height: 15px;
+  width: 20px;
+  height: 20px;
   border-radius: 999px;
 }
 
@@ -436,60 +428,33 @@ pre {
   background: #5ee7b7;
 }
 
-.terminal-title {
-  color: #94a3b8;
-  font-size: 13px;
-  font-weight: 700;
-  text-align: center;
-}
-
 .terminal-body {
-  padding: clamp(22px, 4vw, 42px);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: clamp(15px, 2.2vw, 22px);
-  line-height: 1.7;
+  font-size: clamp(18px, 2.35vw, 29px);
+  line-height: 1.72;
 }
 
 .terminal-body p {
-  margin: 0 0 14px;
+  margin: 0 0 20px;
   color: #d9faff;
   overflow-wrap: anywhere;
 }
 
-.prompt {
-  color: var(--cyan);
-}
-
-.path {
-  color: #c4b5fd;
-}
-
 .dollar {
-  color: #7dd3fc;
+  color: #64748b;
+  margin-right: 10px;
 }
 
-.output {
+.label {
   color: #69f0ae;
+}
+
+.muted-label {
+  color: #d9faff;
 }
 
 .next {
   color: #fde68a;
-}
-
-.terminal-footer {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px;
-  border-top: 1px solid rgba(34, 211, 238, 0.18);
-  background: rgba(34, 211, 238, 0.14);
-}
-
-.terminal-footer span {
-  padding: 16px 20px;
-  background: rgba(15, 23, 42, 0.92);
-  color: #cbd5e1;
-  font-size: 14px;
-  overflow-wrap: anywhere;
 }
 
 .responsible {
@@ -584,8 +549,7 @@ pre {
 
   .command-strip,
   .feature-grid,
-  .workflow,
-  .terminal-footer {
+  .workflow {
     grid-template-columns: 1fr;
   }
 
