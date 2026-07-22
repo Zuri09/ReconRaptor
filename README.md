@@ -34,6 +34,18 @@ chmod +x install.sh
 ./install.sh
 ```
 
+Install the normal recon tools plus local Ollama AI triage:
+
+```bash
+./install.sh --with-ollama
+```
+
+Use a different local model:
+
+```bash
+./install.sh --with-ollama --ollama-model llama3.1
+```
+
 The installer checks for Go and installs:
 
 - `subfinder`
@@ -75,7 +87,7 @@ OPENAI_API_KEY="your_api_key" ./reconraptor.sh -d example.com --ai --ai-provider
 Use a local Ollama model:
 
 ```bash
-./reconraptor.sh -d example.com --ai --ai-provider ollama --ai-model llama3.1
+./reconraptor.sh -d example.com --ai --ai-provider ollama
 ```
 
 Send results to a Discord webhook:
@@ -204,7 +216,7 @@ Useful environment variables:
 
 - `OPENAI_API_KEY`: required for OpenAI mode
 - `OPENAI_MODEL`: OpenAI model, default `gpt-5.6-luna`
-- `OLLAMA_MODEL`: local Ollama model, default `llama3.1`
+- `OLLAMA_MODEL`: local Ollama model, default `llama3.2:3b`
 - `AI_MAX_FINDINGS`: maximum findings included in AI context, default `60`
 
 ## JavaScript Analysis

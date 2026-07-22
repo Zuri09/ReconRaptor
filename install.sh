@@ -3,6 +3,33 @@
 set -e
 
 GO_VERSION="1.24.2"
+INSTALL_OLLAMA=false
+OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --with-ollama)
+            INSTALL_OLLAMA=true
+            shift
+            ;;
+        --ollama-model)
+            if [ -z "${2:-}" ]; then
+                echo "Usage: $0 [--with-ollama] [--ollama-model <model>]"
+                exit 1
+            fi
+            OLLAMA_MODEL="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--with-ollama] [--ollama-model <model>]"
+            exit 0
+            ;;
+        *)
+            echo "Usage: $0 [--with-ollama] [--ollama-model <model>]"
+            exit 1
+            ;;
+    esac
+done
 
 echo "[*] Checking dependencies..."
 
@@ -74,6 +101,30 @@ for tool in subfinder dnsx httpx katana nuclei tlsx subzy waybackurls gitleaks; 
         echo "[!] $tool installed, but it is not in PATH yet."
     fi
 done
+
+if [ "$INSTALL_OLLAMA" = true ]; then
+    echo "[*] Setting up Ollama for local AI triage..."
+
+    if ! command_exists ollama; then
+        if command_exists brew; then
+            brew install ollama
+        else
+            echo "[!] Homebrew is required to install Ollama automatically on macOS."
+            echo "    Install Ollama manually from https://ollama.com/download and rerun this command."
+            exit 1
+        fi
+    else
+        echo "[OK] Ollama is already installed"
+    fi
+
+    if command_exists brew; then
+        brew services start ollama >/dev/null 2>&1 || true
+    fi
+
+    echo "[*] Pulling Ollama model: $OLLAMA_MODEL"
+    ollama pull "$OLLAMA_MODEL"
+    echo "[OK] Ollama is ready. Use: ./reconraptor.sh -d target.com --ai --ai-provider ollama"
+fi
 
 echo "Add this to your shell profile if any tool is not found after restarting your terminal:"
 echo "export PATH=\$PATH:$GO_BIN"
