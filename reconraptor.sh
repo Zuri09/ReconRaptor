@@ -9,6 +9,9 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     YELLOW="${ESC}[33m"
     BLUE="${ESC}[34m"
     MAGENTA="${ESC}[35m"
+    WHITE="${ESC}[97m"
+    BRIGHT_CYAN="${ESC}[96m"
+    BRIGHT_GREEN="${ESC}[92m"
     BOLD="${ESC}[1m"
     DIM="${ESC}[2m"
     RESET="${ESC}[0m"
@@ -19,6 +22,9 @@ else
     YELLOW=""
     BLUE=""
     MAGENTA=""
+    WHITE=""
+    BRIGHT_CYAN=""
+    BRIGHT_GREEN=""
     BOLD=""
     DIM=""
     RESET=""
@@ -108,21 +114,23 @@ summary_path() {
 
 banner() {
     line
-    printf '%b' "$CYAN"
+    printf '%b' "$BRIGHT_CYAN"
     cat << "EOF"
 
-    ____                        ____              __
-   / __ \___  _________  ____  / __ \____ _____  / /_____  _____
-  / /_/ / _ \/ ___/ __ \/ __ \/ /_/ / __ `/ __ \/ __/ __ \/ ___/
- / _, _/  __/ /__/ /_/ / / / / _, _/ /_/ / /_/ / /_/ /_/ / /
-/_/ |_|\___/\___/\____/_/ /_/_/ |_|\__,_/ .___/\__/\____/_/
-                                        /_/
+    ____  ______ ______ ____  _   __ ____  ___    ____  ______ ____   ____
+   / __ \/ ____// ____// __ \/ | / // __ \/   |  / __ \/_  __// __ \ / __ \
+  / /_/ / __/  / /    / / / /  |/ // /_/ / /| | / /_/ / / /  / / / // /_/ /
+ / _, _/ /___ / /___ / /_/ / /|  // _, _/ ___ |/ ____/ / /  / /_/ // _, _/
+/_/ |_/_____/ \____/ \____/_/ |_//_/ |_/_/  |_/_/     /_/   \____//_/ |_|
 
 EOF
     printf '%b' "$RESET"
-    printf '  %bReconRaptor AI%b\n' "$BOLD" "$RESET"
-    printf '  %bAuthorized recon, validation, JS analysis, and AI-powered triage%b\n' "$DIM" "$RESET"
-    printf '  %bModules:%b subdomains / URLs / JS secrets / validators / Nuclei / AI / Discord\n' "$DIM" "$RESET"
+    printf '  %b%s%b %b%s%b\n' "$BOLD$WHITE" "ReconRaptor AI" "$RESET" "$MAGENTA" "authorized recon command center" "$RESET"
+    printf '  %b%s%b\n' "$BRIGHT_GREEN" "AI-powered triage for subdomains, URLs, JavaScript, validators, Nuclei, and reports" "$RESET"
+    printf '  %bProfile%b %s  %bOutput%b %s  %bMode%b %s\n' \
+        "$DIM" "$RESET" "fast + evidence-focused" \
+        "$DIM" "$RESET" "START_HERE.md" \
+        "$DIM" "$RESET" "authorized testing only"
     line
 }
 
