@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="ReconRaptor AI is an AI-powered reconnaissance and triage tool for authorized security testing.">
+    <title>ReconRaptor AI</title>
+    <link rel="stylesheet" href="assets/styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="ReconRaptor AI home">
+        <span class="brand-mark">RR</span>
+        <span>ReconRaptor AI</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="#features">Features</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#output">Output</a>
+        <a href="#install">Install</a>
+      </nav>
+      <a class="header-action" href="https://github.com/Zuri09/ReconRaptor">GitHub</a>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Authorized recon command center</p>
+          <h1>ReconRaptor AI</h1>
+          <p class="hero-text">
+            AI-powered reconnaissance, JavaScript analysis, confirmed validators, and report-ready output for bug bounty and approved security testing.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="button primary" href="#install">Install now</a>
+            <a class="button secondary" href="https://github.com/Zuri09/ReconRaptor">View source</a>
+          </div>
+          <div class="metrics" aria-label="Tool modules">
+            <div>
+              <strong>10+</strong>
+              <span>integrated tools</span>
+            </div>
+            <div>
+              <strong>AI</strong>
+              <span>Ollama or OpenAI</span>
+            </div>
+            <div>
+              <strong>JSON</strong>
+              <span>clean reports</span>
+            </div>
+          </div>
+        </div>
+        <div class="hero-visual" aria-label="ReconRaptor AI command interface preview">
+          <img src="assets/reconraptor-hero.png" alt="Dark command center interface with terminal scan lines and network analysis visuals">
+        </div>
+      </section>
+
+      <section class="command-strip" aria-label="Quick install command">
+        <span>Quick start</span>
+        <code>git clone https://github.com/Zuri09/ReconRaptor.git &amp;&amp; cd ReconRaptor &amp;&amp; ./install.sh</code>
+      </section>
+
+      <section id="features" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Built for signal</p>
+          <h2>From noisy recon to focused leads</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <span class="card-kicker">Discovery</span>
+            <h3>Asset and URL collection</h3>
+            <p>Runs subdomain discovery, DNS resolution, live host probing, historical URL collection, and crawling in one flow.</p>
+          </article>
+          <article class="feature-card">
+            <span class="card-kicker">Validation</span>
+            <h3>Confirmed finding checks</h3>
+            <p>Tests high-signal candidates for exposed files, redirects, CORS issues, GraphQL exposure, cloud storage, and takeovers.</p>
+          </article>
+          <article class="feature-card">
+            <span class="card-kicker">JavaScript</span>
+            <h3>Secrets and client-side indicators</h3>
+            <p>Downloads live JavaScript, runs Gitleaks, applies built-in regex dictionaries, and records source URLs with evidence metadata.</p>
+          </article>
+          <article class="feature-card">
+            <span class="card-kicker">AI triage</span>
+            <h3>Ranked next steps</h3>
+            <p>Uses local Ollama, OpenAI, or offline rules to group findings, highlight likely impact, and reduce review time.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="workflow" class="section workflow-section">
+        <div class="section-heading">
+          <p class="eyebrow">Workflow</p>
+          <h2>One command, organized results</h2>
+        </div>
+        <div class="workflow">
+          <div class="workflow-step">
+            <span>01</span>
+            <h3>Discover</h3>
+            <p>Subdomains, live hosts, URLs, JS, JSON, and interesting exposure paths.</p>
+          </div>
+          <div class="workflow-step">
+            <span>02</span>
+            <h3>Analyze</h3>
+            <p>JavaScript secrets, URL disclosure leads, Nuclei checks, TLS metadata, and takeover signals.</p>
+          </div>
+          <div class="workflow-step">
+            <span>03</span>
+            <h3>Validate</h3>
+            <p>Focused live checks produce high-confidence findings with source URLs and evidence notes.</p>
+          </div>
+          <div class="workflow-step">
+            <span>04</span>
+            <h3>Navigate</h3>
+            <p>Open START_HERE.md first, then jump into findings, URLs, JavaScript, AI triage, or evidence.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="output" class="section split-section">
+        <div>
+          <p class="eyebrow">Output UX</p>
+          <h2>Reports are separated by intent</h2>
+          <p class="section-copy">
+            ReconRaptor AI keeps raw discovery, report files, candidates, and downloaded evidence apart so the result folder is easier to review and share internally.
+          </p>
+          <div class="output-list">
+            <span>reports/findings</span>
+            <span>reports/ai</span>
+            <span>reports/urls</span>
+            <span>reports/js</span>
+            <span>reports/pd</span>
+            <span>evidence</span>
+          </div>
+        </div>
+        <pre class="terminal-preview" aria-label="ReconRaptor output preview"><code>[01] Target: example.com
+  [RUN ] Finding subdomains
+  [DONE] Saved live hosts
+
+[08] Scan Summary
+  Finding signals
+    Confirmed findings           3
+    URL disclosure leads        18
+    Genuine leaks                2
+
+  Where to go next
+    Start here  START_HERE.md
+    Confirmed   reports/findings/</code></pre>
+      </section>
+
+      <section id="install" class="section install-section">
+        <div class="section-heading">
+          <p class="eyebrow">Install</p>
+          <h2>Start scanning approved targets</h2>
+        </div>
+        <div class="install-grid">
+          <div class="install-panel">
+            <h3>Standard scan</h3>
+            <pre><code>git clone https://github.com/Zuri09/ReconRaptor.git
+cd ReconRaptor
+chmod +x install.sh reconraptor.sh
+./install.sh
+./reconraptor.sh -d example.com</code></pre>
+          </div>
+          <div class="install-panel">
+            <h3>Local AI triage</h3>
+            <pre><code>./install.sh --with-ollama
+./reconraptor.sh -d example.com --ai --ai-provider ollama</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="section responsible">
+        <h2>Designed for authorized testing</h2>
+        <p>
+          Use ReconRaptor AI only on assets you own or are explicitly permitted to test. Scanner and AI output are triage signals; reproduce findings manually before reporting.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>ReconRaptor AI</span>
+      <a href="https://github.com/Zuri09/ReconRaptor">GitHub repository</a>
+      <a href="https://github.com/Zuri09/ReconRaptor/blob/main/LICENSE">MIT License</a>
+    </footer>
+  </body>
+</html>
