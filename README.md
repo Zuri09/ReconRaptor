@@ -1,11 +1,12 @@
-# ReconRaptor
+# ReconRaptor AI
 
-ReconRaptor is a Bash-based reconnaissance helper for bug bounty and authorized security testing. It collects subdomains, validates live hosts, gathers archived URLs, extracts JavaScript and JSON assets, and highlights possible secrets or information-disclosure indicators.
+ReconRaptor AI is an AI-powered reconnaissance and triage tool for bug bounty and authorized security testing. It collects subdomains, validates live hosts, gathers archived URLs, extracts JavaScript and JSON assets, confirms high-signal issues, and turns scan output into ranked AI-assisted reports.
 
-The tool is designed to produce practical files you can review quickly after a scan instead of leaving everything mixed together in one large output.
+The tool is designed to produce practical files you can review quickly after a scan: raw evidence stays organized, confirmed findings are separated, and optional local or cloud AI helps prioritize what is worth reporting.
 
 ## Features
 
+- AI-powered finding triage with local Ollama, OpenAI, or offline rules
 - Subdomain discovery with `subfinder`
 - DNS resolution with `dnsx`
 - Live and non-live host classification with `httpx`
@@ -18,12 +19,12 @@ The tool is designed to produce practical files you can review quickly after a s
 - URL-based information-disclosure checks
 - Smart URL filtering for sensitive files and secret-looking URL patterns
 - Confirmed validators for exposed files, open redirects, CORS, GraphQL, public cloud storage, and subdomain takeover
-- Optional AI triage for ranking findings and creating a report-ready summary
+- AI-generated summaries for severity ranking, false-positive review, duplicate grouping, and report-ready wording
 - JavaScript download and analysis
 - Separate reports for generic API key candidates, higher-confidence leaks, Gitleaks findings, and JS vulnerability indicators
 - Tuned concurrency for faster scans while keeping validation focused
 - Optional Discord webhook upload for zipped results
-- Cleaner CLI output with scan sections and a final summary
+- AI-branded CLI output with scan sections and a final summary
 
 ## Installation
 
@@ -66,25 +67,25 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 
 ## Usage
 
-Run a scan:
+Run a standard recon scan:
 
 ```bash
 ./reconraptor.sh -d example.com
 ```
 
-Run a scan with AI triage:
+Run an AI-powered scan:
 
 ```bash
 ./reconraptor.sh -d example.com --ai
 ```
 
-Use OpenAI triage:
+Use cloud AI triage with OpenAI:
 
 ```bash
 OPENAI_API_KEY="your_api_key" ./reconraptor.sh -d example.com --ai --ai-provider openai
 ```
 
-Use a local Ollama model:
+Use private local AI triage with Ollama:
 
 ```bash
 ./reconraptor.sh -d example.com --ai --ai-provider ollama
@@ -96,11 +97,11 @@ Send results to a Discord webhook:
 ./reconraptor.sh -d example.com -w "https://discord.com/api/webhooks/..."
 ```
 
-When `-w` is provided, ReconRaptor compresses `recon_<domain>/` into `results_<domain>.zip` and uploads that zip file to the webhook.
+When `-w` is provided, ReconRaptor AI compresses `recon_<domain>/` into `results_<domain>.zip` and uploads that zip file to the webhook.
 
 ## Output Structure
 
-ReconRaptor creates a target-specific directory:
+ReconRaptor AI creates a target-specific directory:
 
 ```text
 recon_example.com/
@@ -168,7 +169,7 @@ recon_example.com/
 
 `smart_secret_urls.json` stores the matched URL fragment so query-string evidence can be reviewed directly from the report.
 
-`potential_vuln_urls.txt` deduplicates URLs matched by the smart filter. ReconRaptor uses this list for a focused Nuclei pass.
+`potential_vuln_urls.txt` deduplicates URLs matched by the smart filter. ReconRaptor AI uses this list for a focused Nuclei pass.
 
 ## Confirmed Validators
 
@@ -195,9 +196,9 @@ The default values are conservative enough for bug bounty use:
 - `VALIDATOR_PARALLELISM=12`
 - `CURL_TIMEOUT=12`
 
-## AI Triage
+## AI-Powered Triage
 
-AI triage is optional and disabled by default. When enabled with `--ai`, ReconRaptor creates:
+AI triage is optional and disabled by default. When enabled with `--ai`, ReconRaptor AI creates:
 
 - `reports/ai_context.json`: sanitized scan context used for AI analysis
 - `reports/ai_findings.json`: locally ranked findings with severity, score, confidence, and next steps
@@ -221,7 +222,7 @@ Useful environment variables:
 
 ## JavaScript Analysis
 
-ReconRaptor downloads live JavaScript files into `downloaded_js/` and analyzes them with Gitleaks when available. It also runs built-in regex checks.
+ReconRaptor AI downloads live JavaScript files into `downloaded_js/` and analyzes them with Gitleaks when available. It also runs built-in regex checks.
 
 Reports are separated by confidence and purpose:
 
@@ -238,7 +239,7 @@ The JS vulnerability scan looks for indicators such as DOM XSS sinks and sources
 
 ## ProjectDiscovery Checks
 
-ReconRaptor runs two additional ProjectDiscovery checks after URL and JavaScript analysis:
+ReconRaptor AI runs two additional ProjectDiscovery checks after URL and JavaScript analysis:
 
 - `nuclei_findings.jsonl`: Nuclei findings for low, medium, high, and critical severity templates, with raw request/response output omitted.
 - `nuclei_potential_url_findings.jsonl`: Nuclei findings from the focused scan against `potential_vuln_urls.txt`.
@@ -264,7 +265,7 @@ go install -v github.com/zricethezav/gitleaks/v8@latest
 
 ## Responsible Use
 
-Use ReconRaptor only on targets you own or are explicitly authorized to test. Findings from regex-based scanners are indicators and should be manually validated before reporting.
+Use ReconRaptor AI only on targets you own or are explicitly authorized to test. Findings from regex-based scanners and AI triage are indicators and should be manually validated before reporting.
 
 ## License
 

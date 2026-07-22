@@ -68,7 +68,8 @@ cat << "EOF"
 
 EOF
 printf '%b' "$RESET"
-printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Vuln checks | AI triage | Discord reports" "$RESET"
+printf '%b%s%b\n' "$BOLD" "  ReconRaptor AI - AI-powered recon triage for authorized testing" "$RESET"
+printf '%b%s%b\n' "$DIM" "  Subdomains | URLs | JS secrets | Confirmed vulns | Local/Cloud AI | Discord reports" "$RESET"
 }
 
 # Requirements check
@@ -799,7 +800,7 @@ run_ai_triage() {
         return
     fi
 
-    section "AI Triage"
+    section "AI-Powered Triage"
 
     if ! command -v python3 >/dev/null 2>&1; then
         warn "python3 is required for AI triage context generation."
@@ -1042,7 +1043,7 @@ counts = context.get("counts", {})
 type_counts = Counter(item["type"] for item in ranked)
 
 lines = [
-    f"# AI Triage Summary for {domain}",
+    f"# ReconRaptor AI Triage Summary for {domain}",
     "",
     "## Scan Shape",
     f"- Live hosts: {counts.get('live_hosts', 0)}",
@@ -1174,7 +1175,7 @@ if not text:
     text = "\n".join(parts)
 
 if not text and data.get("error"):
-    text = "# AI Triage Failed\n\n" + json.dumps(data["error"], indent=2)
+    text = "# ReconRaptor AI Triage Failed\n\n" + json.dumps(data["error"], indent=2)
 
 with open(output_file, "w", encoding="utf-8") as handle:
     handle.write(text.strip() + "\n")
@@ -1300,7 +1301,7 @@ print_summary() {
     stat_line "Potential URL vulns" "$(count_jsonl_findings reports/nuclei_potential_url_findings.jsonl)"
     stat_line "TLS records" "$(count_jsonl_findings reports/tls_findings.jsonl)"
     if [ "$AI_ENABLED" = "true" ]; then
-        stat_line "AI findings" "$(count_json_findings reports/ai_findings.json)"
+        stat_line "AI-ranked findings" "$(count_json_findings reports/ai_findings.json)"
     fi
 
     printf '\n%b%s%b\n' "$BOLD" "Result files" "$RESET"
@@ -1319,7 +1320,7 @@ print_summary() {
     stat_line "JS leaks" "reports/genuine_leaks.json"
     stat_line "JS map" "evidence/downloaded_js_map.txt"
     if [ "$AI_ENABLED" = "true" ]; then
-        stat_line "AI summary" "reports/ai_summary.md"
+        stat_line "AI report" "reports/ai_summary.md"
         stat_line "AI context" "reports/ai_context.json"
     fi
 }
@@ -1426,7 +1427,7 @@ upload_discord() {
     step "Uploading $zip_file to Discord"
     if curl -fsS -X POST \
         -F "file=@$zip_file;type=application/zip" \
-        -F "payload_json={\"content\":\"ReconRaptor scan report for $1\"}" \
+        -F "payload_json={\"content\":\"ReconRaptor AI scan report for $1\"}" \
         "$2" >/dev/null; then
         success "Discord upload complete."
     else
@@ -1437,6 +1438,7 @@ upload_discord() {
 
 usage() {
     printf 'Usage: %s -d <domain> [-w <discord_webhook>] [--ai] [--ai-provider auto|openai|ollama|rules] [--ai-model <model>]\n' "$0"
+    printf 'ReconRaptor AI: recon, validation, and AI-powered finding triage.\n'
 }
 
 # Args parsing
