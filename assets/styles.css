@@ -245,16 +245,20 @@ h3 {
   position: relative;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid rgba(34, 211, 238, 0.28);
+  padding: 10px;
+  border: 1px solid rgba(34, 211, 238, 0.32);
+  background: #070707;
   border-radius: 8px;
-  box-shadow: 0 30px 90px var(--shadow);
+  box-shadow: 0 24px 70px var(--shadow);
 }
 
 .hero-visual img {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
+  aspect-ratio: 1.24 / 1;
+  object-fit: contain;
+  background: #1f1f1f;
+  border-radius: 4px;
 }
 
 .command-strip,
