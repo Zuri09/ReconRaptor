@@ -1,0 +1,14 @@
+{
+  "project": "ReconRaptor",
+  "framework": "vanilla-html",
+  "font_stack": "system sans + SFMono fallback",
+  "palette": "custom CSS variables in docs/assets/styles.css",
+  "motion": "motion-cut",
+  "spacing": "custom restrained spacing",
+  "preserve": [
+    "dark technical palette",
+    "real CLI screenshot hero",
+    "static docs publishing structure"
+  ],
+  "last_scan": "2026-07-24"
+}
