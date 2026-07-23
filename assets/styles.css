@@ -30,6 +30,9 @@
   --color-install-border: rgba(34, 197, 94, 0.32);
   --color-warning-border: rgba(253, 230, 138, 0.34);
   --color-warning-bg: rgba(120, 53, 15, 0.16);
+  --color-window-close: #ff8fa3;
+  --color-window-minimize: #ffd166;
+  --color-window-expand: #5ee7b7;
   --shadow-panel: 0 24px 70px rgba(0, 0, 0, 0.34);
   --radius: 8px;
   --page: min(1120px, calc(100% - 48px));
@@ -379,16 +382,44 @@ h3 {
   align-items: start;
 }
 
+.install-terminal {
+  border: 1px solid var(--color-install-border);
+  background: var(--color-panel-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-panel);
+}
+
+.terminal-controls {
+  display: flex;
+  gap: 8px;
+  padding: 15px 18px 0;
+}
+
+.terminal-control {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+}
+
+.terminal-control.close {
+  background: var(--color-window-close);
+}
+
+.terminal-control.minimize {
+  background: var(--color-window-minimize);
+}
+
+.terminal-control.expand {
+  background: var(--color-window-expand);
+}
+
 .install-command {
   margin: 0;
-  padding: 20px;
+  padding: 18px 20px 20px;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  border: 1px solid var(--color-install-border);
-  background: var(--color-panel-strong);
   color: var(--color-code);
-  border-radius: var(--radius);
   font-family: var(--font-mono);
   font-size: 14px;
   line-height: 1.65;
