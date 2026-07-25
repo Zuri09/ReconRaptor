@@ -1,32 +1,37 @@
 # ReconRaptor AI
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-7C3AED.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-22C55E.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash-0F172A.svg)](reconraptor.sh)
-[![AI](https://img.shields.io/badge/AI-Ollama%20%7C%20OpenAI-6366F1.svg)](#ai-powered-triage)
-[![Website](https://img.shields.io/badge/site-GitHub%20Pages-22C55E.svg)](https://zuri09.github.io/ReconRaptor/)
-[![Security](https://img.shields.io/badge/use-authorized%20testing-DC2626.svg)](#responsible-use)
+[![AI](https://img.shields.io/badge/AI-Ollama%20%7C%20OpenAI%20%7C%20Rules-22D3EE.svg)](#ai-triage)
+[![Website](https://img.shields.io/badge/site-GitHub%20Pages-D946EF.svg)](https://zuri09.github.io/ReconRaptor/)
+[![Use](https://img.shields.io/badge/use-authorized%20testing-FDE68A.svg)](#responsible-use)
 
-ReconRaptor AI is an AI-powered reconnaissance and triage tool for bug bounty and authorized security testing. It discovers assets, collects URLs, validates high-signal exposures, scans JavaScript, runs ProjectDiscovery checks, and turns the output into ranked reports with local or cloud AI.
+ReconRaptor AI is a Bash reconnaissance workflow for bug bounty and approved security testing. It finds assets, collects URLs, analyzes JavaScript, validates high-signal leads, and writes reports that are easier to review than one giant folder of raw output.
 
-The goal is simple: fewer noisy files, more confirmed leads, and a faster path from recon to report-ready evidence.
+![ReconRaptor AI CLI preview](docs/assets/reconraptor-cli-hero.png)
 
 ```text
-ReconRaptor AI
-subdomains -> URLs -> JS analysis -> confirmed validators -> AI triage -> reports
+scope -> subdomains -> URLs -> JavaScript -> validators -> AI triage -> reports
 ```
+
+## Why it exists
+
+Recon tools are good at producing files. They are not always good at helping you decide what to open first.
+
+ReconRaptor keeps discovery, candidates, findings, JavaScript analysis, ProjectDiscovery output, AI triage, and evidence in separate places. Open `START_HERE.md`, then drill into the report folder that matches what you want to review.
 
 ## What it does
 
-- Discovers subdomains with `subfinder`
-- Resolves and probes hosts with `dnsx` and `httpx`
-- Collects historical and crawled URLs with `waybackurls` and `katana`
-- Filters URLs for sensitive files, risky paths, cloud storage, redirects, GraphQL, and token-like parameters
-- Downloads live JavaScript and scans it with Gitleaks plus built-in regex checks
-- Validates confirmed findings for exposed files, open redirects, CORS, GraphQL introspection, public cloud storage, and takeover signals
-- Runs focused `nuclei` checks and TLS collection with `tlsx`
-- Creates AI triage reports with local Ollama, OpenAI, or offline scoring rules
-- Keeps raw data, reports, and evidence in separate folders
-- Optionally uploads zipped results to Discord
+| Area | What ReconRaptor handles |
+| --- | --- |
+| Asset discovery | `subfinder`, `dnsx`, `httpx` |
+| URL collection | `waybackurls`, `katana`, sorting, filtering |
+| JavaScript analysis | Live JS download, Gitleaks, built-in regex checks, source links |
+| Secret reports | Generic key candidates and higher-confidence leak matches in separate JSON files |
+| Validators | Exposed files, redirects, CORS, GraphQL, storage, takeover signals |
+| ProjectDiscovery checks | Focused `nuclei` output and TLS metadata from `tlsx` |
+| AI triage | Ollama, OpenAI, or offline scoring rules |
+| Output UX | `START_HERE.md`, clean folders, report files, and evidence |
 
 ## Quick start
 
@@ -51,7 +56,7 @@ Run with OpenAI triage:
 OPENAI_API_KEY="your_api_key" ./reconraptor.sh -d example.com --ai --ai-provider openai
 ```
 
-Send results to Discord:
+Send a zip of results to Discord:
 
 ```bash
 ./reconraptor.sh -d example.com -w "https://discord.com/api/webhooks/..."
@@ -59,7 +64,7 @@ Send results to Discord:
 
 ## Installation
 
-The default installer checks for Go and installs the recon stack:
+The installer checks for Go and installs the recon stack.
 
 ```bash
 ./install.sh
@@ -71,9 +76,9 @@ Installed tools:
 | --- | --- |
 | `subfinder` | Subdomain discovery |
 | `dnsx` | DNS resolution |
-| `httpx` | Live host and file validation |
+| `httpx` | Live host probing and validation requests |
 | `katana` | Live crawling |
-| `nuclei` | Template-based vulnerability checks |
+| `nuclei` | Template-based checks |
 | `tlsx` | TLS metadata |
 | `subzy` | Subdomain takeover checks |
 | `waybackurls` | Historical URL collection |
@@ -99,62 +104,41 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 
 ## Usage
 
-Standard scan:
+| Mode | Command |
+| --- | --- |
+| Standard scan | `./reconraptor.sh -d example.com` |
+| Automatic AI provider | `./reconraptor.sh -d example.com --ai` |
+| Local AI with Ollama | `./reconraptor.sh -d example.com --ai --ai-provider ollama` |
+| Cloud AI with OpenAI | `OPENAI_API_KEY="your_api_key" ./reconraptor.sh -d example.com --ai --ai-provider openai` |
+| Offline rules only | `./reconraptor.sh -d example.com --ai --ai-provider rules` |
+| Custom Ollama model | `./reconraptor.sh -d example.com --ai --ai-provider ollama --ai-model llama3.2:3b` |
+
+Tune validation speed:
 
 ```bash
-./reconraptor.sh -d example.com
+MAX_VALIDATION_TARGETS=500 VALIDATOR_PARALLELISM=20 CURL_TIMEOUT=10 ./reconraptor.sh -d example.com
 ```
 
-AI-powered scan with automatic provider selection:
+## AI triage
 
-```bash
-./reconraptor.sh -d example.com --ai
-```
-
-Private local AI triage:
-
-```bash
-./reconraptor.sh -d example.com --ai --ai-provider ollama
-```
-
-Cloud AI triage:
-
-```bash
-OPENAI_API_KEY="your_api_key" ./reconraptor.sh -d example.com --ai --ai-provider openai
-```
-
-Offline rule-based triage:
-
-```bash
-./reconraptor.sh -d example.com --ai --ai-provider rules
-```
-
-Custom model:
-
-```bash
-./reconraptor.sh -d example.com --ai --ai-provider ollama --ai-model llama3.2:3b
-```
-
-## AI-powered triage
-
-AI triage is optional. When you pass `--ai`, ReconRaptor AI builds a sanitized context file and creates:
+AI mode is optional. When you pass `--ai`, ReconRaptor builds a sanitized context file and creates a ranked triage report.
 
 | File | Purpose |
 | --- | --- |
 | `reports/ai/ai_context.json` | Sanitized context passed to AI or local scoring |
-| `reports/ai/ai_findings.json` | Ranked findings with score, severity, confidence, and next step |
+| `reports/ai/ai_findings.json` | Ranked findings with severity, confidence, and next step |
 | `reports/ai/ai_summary.md` | Human-readable triage report |
 | `reports/ai/ai_ollama_response.json` | Raw Ollama response when using local AI |
 | `reports/ai/ai_openai_response.json` | Raw OpenAI response when using OpenAI |
 
-Provider modes:
+Provider behavior:
 
 | Provider | Behavior |
 | --- | --- |
 | `auto` | Uses OpenAI if `OPENAI_API_KEY` is set, then Ollama if available, then local rules |
 | `ollama` | Sends sanitized context to the local Ollama API |
 | `openai` | Sends sanitized context to the OpenAI Responses API |
-| `rules` | Uses local scoring only and sends nothing outside the machine |
+| `rules` | Scores findings locally and sends nothing outside the machine |
 
 Environment variables:
 
@@ -165,7 +149,7 @@ Environment variables:
 | `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model for local triage |
 | `AI_MAX_FINDINGS` | `60` | Max findings included in AI context |
 
-ReconRaptor AI strips secret-like query values, raw request/response content, downloaded JavaScript bodies, and long text before building `reports/ai/ai_context.json`. Treat all scan output as sensitive anyway.
+ReconRaptor strips secret-like query values, raw request and response bodies, downloaded JavaScript bodies, and long text before building `reports/ai/ai_context.json`. Treat scan output as sensitive anyway.
 
 ## Output structure
 
@@ -218,22 +202,22 @@ recon_example.com/
     `-- validator_tmp/
 ```
 
-Open `START_HERE.md` first. It contains counts, the shortest path to the important reports, and a folder guide for the scan.
+Open `START_HERE.md` first.
 
 | Folder | Best for |
 | --- | --- |
 | `reports/findings/` | Confirmed or high-confidence issues |
-| `reports/ai/` | AI-ranked triage and the sanitized model context |
-| `reports/urls/` | URL-based disclosure leads and sensitive file matches |
+| `reports/ai/` | AI-ranked triage and sanitized model context |
+| `reports/urls/` | URL disclosure leads and sensitive file matches |
 | `reports/js/` | JavaScript secrets, Gitleaks output, and client-side indicators |
 | `reports/pd/` | Nuclei and TLS output |
 | `reports/candidates/` | Raw candidates checked by validators |
-| `raw/` | Discovery data such as subdomains, live hosts, URLs, JS, and JSON |
-| `evidence/` | Downloaded JavaScript and validator evidence |
+| `raw/` | Discovery data such as hosts, URLs, JS, and JSON |
+| `evidence/` | Downloaded JavaScript and validator material |
 
 ## Confirmed validators
 
-`reports/findings/confirmed_findings.json` is the main high-signal report. These checks make live requests and only write findings with concrete evidence.
+`reports/findings/confirmed_findings.json` is the main high-signal report.
 
 | Validator | Confirmation logic |
 | --- | --- |
@@ -244,15 +228,9 @@ Open `START_HERE.md` first. It contains counts, the shortest path to the importa
 | Cloud storage | Public readable object or bucket-like listing |
 | Subdomain takeover | `subzy` vulnerable result, with Nuclei output retained separately |
 
-Tune validation speed:
-
-```bash
-MAX_VALIDATION_TARGETS=500 VALIDATOR_PARALLELISM=20 CURL_TIMEOUT=10 ./reconraptor.sh -d example.com
-```
-
 ## JavaScript analysis
 
-ReconRaptor AI downloads live JavaScript files and scans them for:
+ReconRaptor downloads live JavaScript files and scans them for:
 
 - High-confidence secret patterns
 - Generic API key candidates
@@ -275,8 +253,6 @@ Main reports:
 | `reports/js/js_secret_summary.txt` | Summary counts and references |
 
 ## ProjectDiscovery checks
-
-ReconRaptor AI runs additional focused checks after URL and JavaScript analysis:
 
 | Report | Source |
 | --- | --- |
