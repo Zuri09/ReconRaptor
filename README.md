@@ -70,6 +70,12 @@ The installer checks for Go and installs the recon stack.
 ./install.sh
 ```
 
+Skip the Nuclei template update if you are offline or want to keep your existing template cache untouched:
+
+```bash
+./install.sh --skip-nuclei-templates
+```
+
 Installed tools:
 
 | Tool | Purpose |
@@ -188,6 +194,7 @@ recon_example.com/
 |   |   `-- js_vulnerability_findings.json
 |   |-- pd/
 |   |   |-- nuclei_findings.jsonl
+|   |   |-- nuclei_auto_findings.jsonl
 |   |   |-- nuclei_potential_url_findings.jsonl
 |   |   `-- tls_findings.jsonl
 |   `-- candidates/
@@ -256,11 +263,33 @@ Main reports:
 
 | Report | Source |
 | --- | --- |
-| `reports/pd/nuclei_findings.jsonl` | Nuclei scan against live hosts |
-| `reports/pd/nuclei_potential_url_findings.jsonl` | Nuclei scan against high-signal URLs |
+| `reports/pd/nuclei_findings.jsonl` | Curated Nuclei tag profile against live hosts |
+| `reports/pd/nuclei_auto_findings.jsonl` | Nuclei automatic technology-mapped scan |
+| `reports/pd/nuclei_potential_url_findings.jsonl` | Curated Nuclei tag profile against high-signal URLs |
 | `reports/pd/tls_findings.jsonl` | TLS metadata from `tlsx` |
 
 Nuclei runs with raw request and response output omitted.
+
+ReconRaptor installs and updates the official ProjectDiscovery `nuclei-templates` set. The default profile focuses on tags that match ReconRaptor's own workflow:
+
+```text
+exposure, config, misconfig, default-login, unauth, takeover, graphql,
+cors, redirect, swagger, openapi, panel, s3, bucket, aws, azure, google,
+gstorage, token, secret, kev, vkev, cve
+```
+
+The script excludes noisy or unsafe template tags by default:
+
+```text
+intrusive, dos, fuzzing, creds-stuffing, login-check
+```
+
+Override the profile when needed:
+
+```bash
+NUCLEI_TEMPLATE_TAGS="exposure,misconfig,kev,vkev,cve" ./reconraptor.sh -d example.com
+NUCLEI_AUTOMATIC_SCAN=false ./reconraptor.sh -d example.com
+```
 
 ## Updating tools
 
@@ -274,6 +303,7 @@ go install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest
 go install -v github.com/PentestPad/subzy@latest
 go install -v github.com/tomnomnom/waybackurls@latest
 go install -v github.com/zricethezav/gitleaks/v8@latest
+nuclei -update-templates
 ```
 
 Update the default local AI model:

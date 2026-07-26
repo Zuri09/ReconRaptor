@@ -4,6 +4,7 @@ set -e
 
 GO_VERSION="1.24.2"
 INSTALL_OLLAMA=false
+UPDATE_NUCLEI_TEMPLATES=true
 OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
 
 while [ "$#" -gt 0 ]; do
@@ -14,22 +15,28 @@ while [ "$#" -gt 0 ]; do
             ;;
         --ollama-model)
             if [ -z "${2:-}" ]; then
-                echo "Usage: $0 [--with-ollama] [--ollama-model <model>]"
+                echo "Usage: $0 [--with-ollama] [--ollama-model <model>] [--skip-nuclei-templates]"
                 exit 1
             fi
             OLLAMA_MODEL="$2"
             shift 2
             ;;
+        --skip-nuclei-templates)
+            UPDATE_NUCLEI_TEMPLATES=false
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [--with-ollama] [--ollama-model <model>]"
+            echo "Usage: $0 [--with-ollama] [--ollama-model <model>] [--skip-nuclei-templates]"
             exit 0
             ;;
         *)
-            echo "Usage: $0 [--with-ollama] [--ollama-model <model>]"
+            echo "Usage: $0 [--with-ollama] [--ollama-model <model>] [--skip-nuclei-templates]"
             exit 1
             ;;
     esac
 done
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[*] Checking dependencies..."
 
@@ -101,6 +108,19 @@ for tool in subfinder dnsx httpx katana nuclei tlsx subzy waybackurls gitleaks; 
         echo "[!] $tool installed, but it is not in PATH yet."
     fi
 done
+
+if [ "$UPDATE_NUCLEI_TEMPLATES" = true ]; then
+    echo "[*] Updating official ProjectDiscovery nuclei-templates..."
+    if nuclei -update-templates -silent >/dev/null 2>&1; then
+        echo "[OK] nuclei-templates updated"
+    else
+        echo "[!] nuclei-template update failed. Nuclei will try again during normal use."
+    fi
+
+    if [ -f "$script_dir/profiles/nuclei/reconraptor-tags.txt" ]; then
+        echo "[OK] ReconRaptor Nuclei profile: profiles/nuclei/reconraptor-tags.txt"
+    fi
+fi
 
 if [ "$INSTALL_OLLAMA" = true ]; then
     echo "[*] Setting up Ollama for local AI triage..."

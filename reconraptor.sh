@@ -40,6 +40,11 @@ AI_PROVIDER="${AI_PROVIDER:-auto}"
 OPENAI_MODEL="${OPENAI_MODEL:-gpt-5.6-luna}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
 AI_MAX_FINDINGS="${AI_MAX_FINDINGS:-60}"
+NUCLEI_TEMPLATE_TAGS="${NUCLEI_TEMPLATE_TAGS:-exposure,config,misconfig,default-login,unauth,takeover,graphql,cors,redirect,swagger,openapi,panel,s3,bucket,aws,azure,google,gstorage,token,secret,kev,vkev,cve}"
+NUCLEI_EXCLUDE_TAGS="${NUCLEI_EXCLUDE_TAGS:-intrusive,dos,fuzzing,creds-stuffing,login-check}"
+NUCLEI_CONCURRENCY="${NUCLEI_CONCURRENCY:-25}"
+NUCLEI_RATE_LIMIT="${NUCLEI_RATE_LIMIT:-100}"
+NUCLEI_AUTOMATIC_SCAN="${NUCLEI_AUTOMATIC_SCAN:-true}"
 
 info() {
     printf '%b%s%b\n' "$1" "$2" "$RESET"
@@ -164,10 +169,12 @@ check_installed() {
 
 run_projectdiscovery_checks() {
     nuclei_file="nuclei_findings.jsonl"
+    nuclei_auto_file="nuclei_auto_findings.jsonl"
     nuclei_potential_file="nuclei_potential_url_findings.jsonl"
     tls_file="tls_findings.jsonl"
 
     : > "$nuclei_file"
+    : > "$nuclei_auto_file"
     : > "$nuclei_potential_file"
     : > "$tls_file"
 
@@ -176,24 +183,42 @@ run_projectdiscovery_checks() {
         return
     fi
 
-    step "Running nuclei safe vulnerability checks"
+    step "Running curated nuclei checks for ReconRaptor findings"
     nuclei -l authsubs.txt \
+        -tags "$NUCLEI_TEMPLATE_TAGS" \
+        -etags "$NUCLEI_EXCLUDE_TAGS" \
         -severity low,medium,high,critical \
         -jsonl \
         -omit-raw \
-        -c 25 \
-        -rl 100 \
+        -c "$NUCLEI_CONCURRENCY" \
+        -rl "$NUCLEI_RATE_LIMIT" \
         -silent \
         -o "$nuclei_file" >/dev/null 2>&1 || warn "nuclei completed with findings or warnings."
 
-    if [ -s "potential_vuln_urls.txt" ]; then
-        step "Running nuclei checks against high-signal URLs"
-        nuclei -l potential_vuln_urls.txt \
+    if [ "$NUCLEI_AUTOMATIC_SCAN" = "true" ]; then
+        step "Running nuclei automatic technology-mapped checks"
+        nuclei -l authsubs.txt \
+            -as \
+            -etags "$NUCLEI_EXCLUDE_TAGS" \
             -severity low,medium,high,critical \
             -jsonl \
             -omit-raw \
-            -c 25 \
-            -rl 100 \
+            -c "$NUCLEI_CONCURRENCY" \
+            -rl "$NUCLEI_RATE_LIMIT" \
+            -silent \
+            -o "$nuclei_auto_file" >/dev/null 2>&1 || warn "nuclei automatic scan completed with findings or warnings."
+    fi
+
+    if [ -s "potential_vuln_urls.txt" ]; then
+        step "Running curated nuclei checks against high-signal URLs"
+        nuclei -l potential_vuln_urls.txt \
+            -tags "$NUCLEI_TEMPLATE_TAGS" \
+            -etags "$NUCLEI_EXCLUDE_TAGS" \
+            -severity low,medium,high,critical \
+            -jsonl \
+            -omit-raw \
+            -c "$NUCLEI_CONCURRENCY" \
+            -rl "$NUCLEI_RATE_LIMIT" \
             -silent \
             -o "$nuclei_potential_file" >/dev/null 2>&1 || warn "nuclei potential URL scan completed with findings or warnings."
     fi
@@ -201,7 +226,7 @@ run_projectdiscovery_checks() {
     step "Collecting TLS metadata with tlsx"
     sed 's#^https\?://##' authsubs.txt | tlsx -json -silent > "$tls_file" 2>/dev/null || warn "tlsx completed with warnings."
 
-    success "ProjectDiscovery checks saved to $nuclei_file and $tls_file"
+    success "ProjectDiscovery checks saved to $nuclei_file, $nuclei_auto_file, $nuclei_potential_file, and $tls_file"
 }
 
 run_confirmed_validators() {
@@ -1052,6 +1077,7 @@ context = {
     },
     "confirmed_findings": load_json(os.path.join(findings_dir, "confirmed_findings.json")),
     "nuclei_findings": load_jsonl(os.path.join(pd_dir, "nuclei_findings.jsonl")),
+    "nuclei_auto_findings": load_jsonl(os.path.join(pd_dir, "nuclei_auto_findings.jsonl")),
     "nuclei_potential_url_findings": load_jsonl(os.path.join(pd_dir, "nuclei_potential_url_findings.jsonl")),
     "js_vulnerability_indicators": load_json(os.path.join(js_dir, "js_vulnerability_findings.json")),
     "genuine_leak_metadata": load_json(os.path.join(js_dir, "genuine_leaks.json")),
@@ -1131,6 +1157,21 @@ for item in context.get("nuclei_findings", [])[:20]:
         "source_url": item.get("matched-at", item.get("host", "")),
         "evidence": item.get("template-id", ""),
         "recommended_next_step": "Validate the template result manually and collect clean reproduction evidence."
+    })
+
+for item in context.get("nuclei_auto_findings", [])[:20]:
+    info = item.get("info", {}) if isinstance(item, dict) else {}
+    sev = str(info.get("severity", "medium")).lower()
+    base = {"critical": 88, "high": 75, "medium": 55, "low": 35}.get(sev, 45)
+    ranked.append({
+        "title": info.get("name", item.get("template-id", "Nuclei automatic finding")),
+        "type": "nuclei-automatic",
+        "severity": sev,
+        "score": base,
+        "confidence": "technology-mapped-template-match",
+        "source_url": item.get("matched-at", item.get("host", "")),
+        "evidence": item.get("template-id", ""),
+        "recommended_next_step": "Validate the technology-mapped template result manually and collect clean reproduction evidence."
     })
 
 ranked = sorted(ranked, key=lambda item: item["score"], reverse=True)
@@ -1356,7 +1397,7 @@ organize_output() {
         [ -f "$file" ] && mv -f "$file" "reports/js/$file"
     done
 
-    for file in nuclei_findings.jsonl nuclei_potential_url_findings.jsonl tls_findings.jsonl; do
+    for file in nuclei_findings.jsonl nuclei_auto_findings.jsonl nuclei_potential_url_findings.jsonl tls_findings.jsonl; do
         [ -f "$file" ] && mv -f "$file" "reports/pd/$file"
     done
 
@@ -1398,7 +1439,8 @@ write_result_index() {
         printf '| Smart URL secrets | %s |\n' "$(count_json_findings reports/urls/smart_secret_urls.json)"
         printf '| Genuine JS leaks | %s |\n' "$(count_json_findings reports/js/genuine_leaks.json)"
         printf '| JS indicators | %s |\n' "$(count_json_findings reports/js/js_vulnerability_findings.json)"
-        printf '| Nuclei findings | %s |\n' "$(count_jsonl_findings reports/pd/nuclei_findings.jsonl)"
+        printf '| Nuclei curated findings | %s |\n' "$(count_jsonl_findings reports/pd/nuclei_findings.jsonl)"
+        printf '| Nuclei automatic findings | %s |\n' "$(count_jsonl_findings reports/pd/nuclei_auto_findings.jsonl)"
         printf '| Focused Nuclei findings | %s |\n' "$(count_jsonl_findings reports/pd/nuclei_potential_url_findings.jsonl)"
         if [ "$AI_ENABLED" = "true" ]; then
             printf '| AI-ranked findings | %s |\n' "$(count_json_findings reports/ai/ai_findings.json)"
@@ -1437,6 +1479,7 @@ print_summary() {
     genuine_leaks_count=$(count_json_findings reports/js/genuine_leaks.json)
     js_indicators_count=$(count_json_findings reports/js/js_vulnerability_findings.json)
     nuclei_count=$(count_jsonl_findings reports/pd/nuclei_findings.jsonl)
+    nuclei_auto_count=$(count_jsonl_findings reports/pd/nuclei_auto_findings.jsonl)
     potential_nuclei_count=$(count_jsonl_findings reports/pd/nuclei_potential_url_findings.jsonl)
     tls_count=$(count_jsonl_findings reports/pd/tls_findings.jsonl)
 
@@ -1454,7 +1497,8 @@ print_summary() {
     summary_row "URL disclosure leads" "$url_disclosures_count"
     summary_row "Sensitive file matches" "$smart_files_count"
     summary_row "Secret URLs" "$smart_url_secrets_count"
-    summary_row "Nuclei findings" "$nuclei_count"
+    summary_row "Nuclei curated" "$nuclei_count"
+    summary_row "Nuclei automatic" "$nuclei_auto_count"
     summary_row "Focused Nuclei findings" "$potential_nuclei_count"
 
     summary_group "JavaScript analysis"
@@ -1607,6 +1651,8 @@ usage() {
     printf '  %-30s %s\n' '--ai' 'Enable AI-powered triage'
     printf '  %-30s %s\n' '--ai-provider <mode>' 'auto, openai, ollama, or rules'
     printf '  %-30s %s\n' '--ai-model <model>' 'Model name for OpenAI or Ollama'
+    printf '  %-30s %s\n' 'NUCLEI_TEMPLATE_TAGS=...' 'Override curated Nuclei template tags'
+    printf '  %-30s %s\n' 'NUCLEI_AUTOMATIC_SCAN=false' 'Disable technology-mapped Nuclei scan'
     printf '  %-30s %s\n' '-h, --help' 'Show this help screen'
     printf '\n%bExamples%b\n' "$BOLD" "$RESET"
     printf '  %s -d example.com\n' "$0"

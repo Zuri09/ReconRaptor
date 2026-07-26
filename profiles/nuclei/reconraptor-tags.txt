@@ -1,0 +1,30 @@
+# ReconRaptor Nuclei profile
+#
+# These tags map to the vulnerability classes ReconRaptor already discovers:
+# exposed files, secrets, API docs, GraphQL, CORS, redirects, cloud storage,
+# takeover signals, panels, misconfigurations, and exploited CVEs.
+#
+# The script passes these tags as a comma-separated NUCLEI_TEMPLATE_TAGS value.
+exposure
+config
+misconfig
+default-login
+unauth
+takeover
+graphql
+cors
+redirect
+swagger
+openapi
+panel
+s3
+bucket
+aws
+azure
+google
+gstorage
+token
+secret
+kev
+vkev
+cve
