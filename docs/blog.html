@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="ReconRaptorAI turns reconnaissance output into a focused review workflow for authorized security testing.">
+    <title>Stop Drowning in Recon Output | ReconRaptorAI</title>
+    <link rel="icon" type="image/svg+xml" href="assets/favicon.svg?v=6">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;650;850&display=swap">
+    <link rel="stylesheet" href="assets/styles.css?v=7">
+    <script defer src="assets/site.js?v=1"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="index.html" aria-label="ReconRaptorAI home">
+        <span class="brand-mark">RR</span>
+        <span>ReconRaptorAI</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="index.html#features">Features</a>
+        <a href="index.html#install">Install</a>
+        <a href="https://github.com/Zuri09/ReconRaptor">GitHub</a>
+      </nav>
+      <a class="header-action" href="#quick-start">Start here</a>
+    </header>
+
+    <main class="article" id="top">
+      <article>
+        <header class="article-hero" data-reveal>
+          <p class="eyebrow">ReconRaptorAI / Field notes</p>
+          <h1>Stop drowning in recon output. Start hunting the signal.</h1>
+          <p class="article-dek">ReconRaptorAI is the reconnaissance workflow that turns scattered assets, URLs, JavaScript, and scanner output into a review path you can actually use.</p>
+          <div class="article-meta"><span>ReconRaptorAI</span><span>•</span><span>For authorized security testing</span></div>
+        </header>
+
+        <figure class="article-image" data-reveal>
+          <img src="assets/medium/reconraptorai-terminal-cover.png" alt="ReconRaptorAI terminal-style banner with authorized-use tagline">
+          <figcaption>ReconRaptorAI — AI-powered recon for authorized use only.</figcaption>
+        </figure>
+
+        <section class="article-body" data-reveal>
+          <p class="article-lede">Recon is supposed to create opportunity. Too often, it creates a directory full of tools, logs, duplicate URLs, and unanswered questions. ReconRaptorAI gives that work a spine: discover, collect, analyze, validate, triage, review.</p>
+
+          <h2>What ReconRaptorAI does</h2>
+          <p>ReconRaptorAI is a Bash-based workflow for bug bounty and approved security testing. It chains proven reconnaissance tools into one structured run, then separates raw data from higher-signal reports and supporting evidence.</p>
+          <div class="article-grid">
+            <section>
+              <h3>Discover the surface</h3>
+              <p>Find subdomains, resolve DNS, identify live hosts, collect historical URLs, and crawl live targets.</p>
+            </section>
+            <section>
+              <h3>Read the client side</h3>
+              <p>Download live JavaScript, run Gitleaks, inspect for secrets and client-side indicators, and retain source links.</p>
+            </section>
+            <section>
+              <h3>Validate focused leads</h3>
+              <p>Check exposed files, redirects, CORS, GraphQL, storage, TLS, and takeover signals with evidence-first output.</p>
+            </section>
+            <section>
+              <h3>Choose the next review</h3>
+              <p>Use OpenAI, Ollama, or offline rules to rank leads—then open <code>START_HERE.md</code> for the review path.</p>
+            </section>
+          </div>
+
+          <h2 id="quick-start">Install it</h2>
+          <p>The installer checks for Go and installs the reconnaissance stack: subfinder, dnsx, httpx, katana, nuclei, tlsx, subzy, waybackurls, and gitleaks.</p>
+          <pre><code>git clone https://github.com/Zuri09/ReconRaptor.git
+cd ReconRaptor
+chmod +x install.sh reconraptor.sh
+./install.sh
+./reconraptor.sh -d example.com</code></pre>
+          <p>For local AI triage, install Ollama alongside the toolchain:</p>
+          <pre><code>./install.sh --with-ollama
+./reconraptor.sh -d example.com --ai --ai-provider ollama</code></pre>
+          <p>If you are offline or want to leave your existing Nuclei template cache alone, run <code>./install.sh --skip-nuclei-templates</code>. To select a different local model during installation, use <code>--ollama-model &lt;model&gt;</code>.</p>
+
+          <h2>Options that matter</h2>
+          <div class="option-table" role="region" aria-label="ReconRaptorAI command options" tabindex="0">
+            <table>
+              <thead><tr><th>Option</th><th>What it does</th></tr></thead>
+              <tbody>
+                <tr><td><code>-d, --domain &lt;domain&gt;</code></td><td>Required target domain to scan.</td></tr>
+                <tr><td><code>-w, --webhook &lt;url&gt;</code></td><td>Uploads the final results zip to a Discord webhook.</td></tr>
+                <tr><td><code>--ai</code></td><td>Enables AI-powered triage.</td></tr>
+                <tr><td><code>--ai-provider &lt;mode&gt;</code></td><td>Choose <code>auto</code>, <code>openai</code>, <code>ollama</code>, or <code>rules</code>.</td></tr>
+                <tr><td><code>--ai-model &lt;model&gt;</code></td><td>Sets the model name for OpenAI or Ollama.</td></tr>
+                <tr><td><code>NUCLEI_TEMPLATE_TAGS=...</code></td><td>Overrides the curated Nuclei template tags.</td></tr>
+                <tr><td><code>NUCLEI_AUTOMATIC_SCAN=false</code></td><td>Disables the technology-mapped Nuclei scan.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>Pick the triage mode that fits the engagement</h2>
+          <p>AI triage is optional. ReconRaptorAI builds a sanitized context file and produces a ranked report. In <code>auto</code> mode it prefers OpenAI when <code>OPENAI_API_KEY</code> is set, then Ollama when available, then offline rules.</p>
+          <pre><code># Cloud triage
+OPENAI_API_KEY="your_api_key" ./reconraptor.sh -d example.com --ai --ai-provider openai
+
+# Nothing leaves the machine
+./reconraptor.sh -d example.com --ai --ai-provider rules
+
+# Choose a local model
+./reconraptor.sh -d example.com --ai --ai-provider ollama --ai-model llama3.2:3b</code></pre>
+          <p>Sanitization removes secret-like query values, raw request and response bodies, downloaded JavaScript bodies, and long text before context is sent to an AI provider. Treat every scan output as sensitive regardless.</p>
+
+          <figure class="article-image">
+            <img src="assets/medium/reconraptorai-evidence-flow.png" alt="Abstract evidence flow from reconnaissance data through validation to reports">
+            <figcaption>Discovery data becomes focused leads, evidence, and reviewable reports.</figcaption>
+          </figure>
+
+          <h2>The payoff: a review path, not a junk drawer</h2>
+          <p>Every run creates a target directory with a <code>START_HERE.md</code> index. Confirmed or high-confidence results go in <code>reports/findings/</code>; AI summaries in <code>reports/ai/</code>; JavaScript analysis in <code>reports/js/</code>; URL leads in <code>reports/urls/</code>; and downloaded material in <code>evidence/</code>.</p>
+          <p>That structure does not replace manual verification. It makes the work of verifying more deliberate: start with the strongest lead, trace it to evidence, reproduce it, and only then report it.</p>
+
+          <aside class="article-callout">
+            <p class="eyebrow">Use with permission</p>
+            <p>ReconRaptorAI is built for assets you own or are explicitly authorized to test. Scanner and AI output are triage leads, not proof—confirm scope and reproduce findings manually.</p>
+          </aside>
+        </section>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <span>ReconRaptorAI</span>
+      <a href="index.html">Product overview</a>
+      <a href="https://github.com/Zuri09/ReconRaptor">GitHub repository</a>
+      <a href="https://github.com/Zuri09/ReconRaptor/blob/main/LICENSE">MIT License</a>
+    </footer>
+  </body>
+</html>
