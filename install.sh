@@ -98,10 +98,11 @@ go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
 go install -v github.com/projectdiscovery/tlsx/cmd/tlsx@latest
 go install -v github.com/PentestPad/subzy@latest
 go install -v github.com/tomnomnom/waybackurls@latest
+go install -v github.com/lc/gau/v2/cmd/gau@latest
 go install -v github.com/zricethezav/gitleaks/v8@latest
 
 echo "[*] Verifying installed tools..."
-for tool in subfinder dnsx httpx katana nuclei tlsx subzy waybackurls gitleaks; do
+for tool in subfinder dnsx httpx katana nuclei tlsx subzy waybackurls gau gitleaks; do
     if command_exists "$tool"; then
         echo "[OK] $tool installed"
     else

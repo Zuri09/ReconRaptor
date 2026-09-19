@@ -1,5 +1,19 @@
 #!/bin/bash
 
+# Fail on unset variables and preserve pipeline exit codes. We deliberately do
+# NOT enable `set -e`: many steps use `cmd ... || warn` and several validators
+# return non-zero by design, so aborting on any non-zero status would be wrong.
+set -uo pipefail
+
+# Stop background validator/curl jobs cleanly if the user interrupts the run.
+rr_cleanup() {
+    trap - INT TERM
+    printf '\n  [WARN] Interrupted. Stopping background jobs...\n' >&2
+    kill $(jobs -p) 2>/dev/null
+    exit 130
+}
+trap rr_cleanup INT TERM
+
 # Terminal UI. Use printf-friendly ANSI escapes so shells do not print "\e[32m" literally.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     ESC=$(printf '\033')
@@ -37,9 +51,18 @@ VALIDATOR_PARALLELISM="${VALIDATOR_PARALLELISM:-12}"
 CURL_TIMEOUT="${CURL_TIMEOUT:-12}"
 AI_ENABLED="${AI_ENABLED:-false}"
 AI_PROVIDER="${AI_PROVIDER:-auto}"
-OPENAI_MODEL="${OPENAI_MODEL:-gpt-5.6-luna}"
+OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
+OPENAI_BASE_URL="${OPENAI_BASE_URL:-https://api.openai.com/v1}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
+DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-chat}"
+DEEPSEEK_BASE_URL="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
 AI_MAX_FINDINGS="${AI_MAX_FINDINGS:-60}"
+KEEP_EVIDENCE="${KEEP_EVIDENCE:-false}"
+EXCLUDE_FILE="${EXCLUDE_FILE:-}"
+
+# API keys are optional; default to empty so `set -u` does not abort when unset.
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
 NUCLEI_TEMPLATE_TAGS="${NUCLEI_TEMPLATE_TAGS:-exposure,config,misconfig,default-login,unauth,takeover,graphql,cors,redirect,swagger,openapi,panel,s3,bucket,aws,azure,google,gstorage,token,secret,kev,vkev,cve}"
 NUCLEI_EXCLUDE_TAGS="${NUCLEI_EXCLUDE_TAGS:-intrusive,dos,fuzzing,creds-stuffing,login-check}"
 NUCLEI_CONCURRENCY="${NUCLEI_CONCURRENCY:-25}"
@@ -147,7 +170,7 @@ print_run_profile() {
     stat_line "AI mode" "$AI_ENABLED"
     if [ "$AI_ENABLED" = "true" ]; then
         stat_line "AI provider" "$AI_PROVIDER"
-        stat_line "AI model" "$OLLAMA_MODEL / $OPENAI_MODEL"
+        stat_line "AI model" "openai=$OPENAI_MODEL ollama=$OLLAMA_MODEL deepseek=$DEEPSEEK_MODEL"
     fi
     stat_line "Validator parallelism" "$VALIDATOR_PARALLELISM"
     stat_line "Candidate cap" "$MAX_VALIDATION_TARGETS"
@@ -164,6 +187,10 @@ check_installed() {
 
     if ! command -v subzy >/dev/null 2>&1; then
         warn "subzy is not installed. Subdomain takeover checks will use nuclei only."
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        warn "python3 is not installed. Finding counts fall back to grep and AI triage is unavailable."
     fi
 }
 
@@ -320,16 +347,24 @@ run_parallel_file_checks() {
 
     [ -s "$input_file" ] || return
 
-    job_count=0
+    # Keep up to VALIDATOR_PARALLELISM jobs in flight. When full, wait for the
+    # OLDEST job (not all of them) before launching more, so one slow/timing-out
+    # host cannot stall a whole batch. Portable to bash 3.2 (no `wait -n`).
+    pids=""
+    running=0
     while IFS= read -r target; do
         [ -z "$target" ] && continue
         job_id=$(printf '%s' "$target" | cksum | awk '{print $1}')
         "$validator" "$target" > "${out_prefix}_${job_id}.jsonl" &
-        job_count=$((job_count + 1))
+        pids="$pids $!"
+        running=$((running + 1))
 
-        if [ "$job_count" -ge "$VALIDATOR_PARALLELISM" ]; then
-            wait
-            job_count=0
+        if [ "$running" -ge "$VALIDATOR_PARALLELISM" ]; then
+            set -- $pids
+            wait "$1" 2>/dev/null
+            shift
+            pids="$*"
+            running=$((running - 1))
         fi
     done < "$input_file"
     wait
@@ -366,9 +401,19 @@ validate_open_redirect_url() {
     test_url=$(printf '%s' "$url" | sed -E 's#([?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=)[^&#]*#\1https%3A%2F%2Fexample.com%2F#')
     [ "$test_url" != "$url" ] || return
 
-    header_file="validator_tmp/$(printf '%s' "$url" | cksum | awk '{print $1}')_redirect_headers.txt"
+    redirect_id=$(printf '%s' "$url" | cksum | awk '{print $1}')
+
+    # Try a HEAD request first; some apps only issue the redirect on GET, so fall
+    # back to GET when HEAD does not reveal a Location pointing at our host.
+    header_file="validator_tmp/${redirect_id}_redirect_head.txt"
     status=$(curl -ksI --connect-timeout 5 --max-time "$CURL_TIMEOUT" --max-redirs 0 -D "$header_file" -o /dev/null -w '%{http_code}' "$test_url" 2>/dev/null)
     location=$(grep -i '^location:' "$header_file" | head -n 1 | sed 's/^[Ll]ocation:[[:space:]]*//;s/\r//')
+
+    if ! printf '%s\n' "$location" | grep -Eiq '^https?://example\.com/?'; then
+        header_file="validator_tmp/${redirect_id}_redirect_get.txt"
+        status=$(curl -ks --connect-timeout 5 --max-time "$CURL_TIMEOUT" --max-redirs 0 -D "$header_file" -o /dev/null -w '%{http_code}' "$test_url" 2>/dev/null)
+        location=$(grep -i '^location:' "$header_file" | head -n 1 | sed 's/^[Ll]ocation:[[:space:]]*//;s/\r//')
+    fi
 
     if printf '%s\n' "$location" | grep -Eiq '^https?://example\.com/?'; then
         emit_jsonl_finding "open_redirect" "$test_url" "confirmed" "$status" "Location header redirects to controlled external host"
@@ -377,15 +422,32 @@ validate_open_redirect_url() {
 
 validate_cors_target() {
     url="$1"
-    header_file="validator_tmp/$(printf '%s' "$url" | cksum | awk '{print $1}')_cors_headers.txt"
+    base_id=$(printf '%s' "$url" | cksum | awk '{print $1}')
+
+    # 1. Reflected arbitrary Origin (highest impact when credentials are allowed).
+    header_file="validator_tmp/${base_id}_cors_headers.txt"
     status=$(curl -ksI --connect-timeout 5 --max-time "$CURL_TIMEOUT" -H 'Origin: https://evil.example' -D "$header_file" -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)
     allow_origin=$(grep -i '^access-control-allow-origin:' "$header_file" | head -n 1 | sed 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin:[[:space:]]*//;s/\r//')
     allow_credentials=$(grep -i '^access-control-allow-credentials:' "$header_file" | head -n 1 | sed 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Cc]redentials:[[:space:]]*//;s/\r//')
 
     if [ "$allow_origin" = "https://evil.example" ] && printf '%s\n' "$allow_credentials" | grep -Eiq '^true$'; then
         emit_jsonl_finding "cors_origin_reflection_with_credentials" "$url" "confirmed" "$status" "Reflected arbitrary Origin with credentials enabled"
+    elif [ "$allow_origin" = "https://evil.example" ]; then
+        emit_jsonl_finding "cors_origin_reflection" "$url" "high" "$status" "Reflected arbitrary Origin without credentials"
     elif [ "$allow_origin" = "*" ]; then
         emit_jsonl_finding "cors_wildcard_origin" "$url" "high" "$status" "Wildcard Access-Control-Allow-Origin observed"
+    fi
+
+    # 2. Trusted "null" Origin (sandboxed iframes, data:/file: contexts).
+    null_header="validator_tmp/${base_id}_cors_null.txt"
+    null_status=$(curl -ksI --connect-timeout 5 --max-time "$CURL_TIMEOUT" -H 'Origin: null' -D "$null_header" -o /dev/null -w '%{http_code}' "$url" 2>/dev/null)
+    null_origin=$(grep -i '^access-control-allow-origin:' "$null_header" | head -n 1 | sed 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin:[[:space:]]*//;s/\r//')
+    null_credentials=$(grep -i '^access-control-allow-credentials:' "$null_header" | head -n 1 | sed 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Cc]redentials:[[:space:]]*//;s/\r//')
+
+    if [ "$null_origin" = "null" ] && printf '%s\n' "$null_credentials" | grep -Eiq '^true$'; then
+        emit_jsonl_finding "cors_null_origin_with_credentials" "$url" "confirmed" "$null_status" "Trusted 'null' Origin with credentials enabled"
+    elif [ "$null_origin" = "null" ]; then
+        emit_jsonl_finding "cors_null_origin_trusted" "$url" "high" "$null_status" "Trusted 'null' Origin without credentials"
     fi
 }
 
@@ -564,9 +626,10 @@ scan_js_secrets() {
             printf 'Gitleaks completed with findings or warnings. Review %s.\n' "$gitleaks_file" > "$summary_file"
         fi
     else
-        warn "gitleaks not installed. Using high-confidence built-in checks."
+        warn "gitleaks not installed. Relying on built-in regex checks only."
     fi
 
+    step "Running built-in high-confidence secret regexes"
     while read -r js_file js_url; do
         [ -f "$js_file" ] || continue
 
@@ -641,7 +704,7 @@ append_json_finding() {
     local_file="$4"
     line_no="$5"
     match_value="$6"
-    redacted_match="$match_value"
+    redacted_match=$(redact_match "$match_value")
     match_length=$(printf '%s' "$match_value" | wc -c | tr -d ' ')
     match_hash=$(hash_match "$match_value")
 
@@ -670,17 +733,18 @@ hash_match() {
     fi
 }
 
+# Redact an extracted secret so reports never store credential values in the
+# clear. Keeps a short prefix so an analyst can recognize the key type, and the
+# caller separately records match_length and match_sha256 for correlation.
 redact_match() {
-    awk '
-    {
-        if (length($0) <= 16) {
-            print "$0"
-        } else {
-            print "$0"
-        }
-    }' << EOF
-$1
-EOF
+    value="$1"
+    length=${#value}
+    if [ "$length" -le 8 ]; then
+        printf '[redacted]'
+    else
+        prefix=$(printf '%s' "$value" | cut -c1-4)
+        printf '%s...[redacted:%s chars]' "$prefix" "$length"
+    fi
 }
 
 json_escape() {
@@ -691,6 +755,8 @@ json_escape() {
         gsub(/\t/,"\\t")
         gsub(/\r/,"\\r")
         gsub(/\n/,"\\n")
+        # Drop any remaining raw control bytes so output stays valid JSON.
+        gsub(/[[:cntrl:]]/,"")
         printf "%s", $0
     }' << EOF
 $1
@@ -739,21 +805,17 @@ scan_url_info_disclosure() {
     fi
 
     step "Scanning URLs for info-disclosure indicators"
-    while IFS= read -r url; do
-        [ -z "$url" ] && continue
-
-        scan_url_pattern "$report_file" "$url" "HIGH: environment/config file" '(\.env($|[?#])|/\.env($|[?#])|/config\.(json|ya?ml|xml|ini|php|bak|old)($|[?#])|/settings\.(json|ya?ml|xml|ini)($|[?#]))'
-        scan_url_pattern "$report_file" "$url" "HIGH: backup/archive/database dump" '(\.bak($|[?#])|\.backup($|[?#])|\.old($|[?#])|\.orig($|[?#])|\.save($|[?#])|\.swp($|[?#])|\.zip($|[?#])|\.tar($|[?#])|\.tar\.gz($|[?#])|\.tgz($|[?#])|\.7z($|[?#])|\.rar($|[?#])|\.sql($|[?#])|\.db($|[?#])|\.sqlite($|[?#]))'
-        scan_url_pattern "$report_file" "$url" "HIGH: credential/token in URL" '([?&](api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|client[_-]?secret|password|passwd|pwd|jwt|session|sid)=([^&#]{8,}))'
-        scan_url_pattern "$report_file" "$url" "HIGH: private key/certificate path" '(\.pem($|[?#])|\.key($|[?#])|\.p12($|[?#])|\.pfx($|[?#])|id_rsa($|[?#])|id_dsa($|[?#]))'
-        scan_url_pattern "$report_file" "$url" "MEDIUM: source map disclosure" '(\.map($|[?#])|sourceMappingURL=)'
-        scan_url_pattern "$report_file" "$url" "MEDIUM: logs/debug/trace" '(/logs?/|\.log($|[?#])|/debug($|[/?#])|/trace($|[/?#])|/profiler($|[/?#])|/phpinfo\.php($|[?#])|/server-status($|[/?#])|/actuator($|[/?#]))'
-        scan_url_pattern "$report_file" "$url" "MEDIUM: API docs/schema exposure" '(/swagger($|[/?#])|/swagger-ui($|[/?#])|/api-docs($|[/?#])|/openapi\.(json|ya?ml)($|[?#])|/graphql($|[/?#])|/graphiql($|[/?#]))'
-        scan_url_pattern "$report_file" "$url" "MEDIUM: admin/internal/dev endpoint" '(/admin($|[/?#])|/internal($|[/?#])|/private($|[/?#])|/dev($|[/?#])|/staging($|[/?#])|/test($|[/?#])|/qa($|[/?#])|/beta($|[/?#]))'
-        scan_url_pattern "$report_file" "$url" "MEDIUM: possible open redirect parameter" '([?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=https?%3A%2F%2F|[?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=https?://)'
-        scan_url_pattern "$report_file" "$url" "LOW: interesting document/export" '(\.csv($|[?#])|\.xlsx?($|[?#])|\.docx?($|[?#])|\.pdf($|[?#])|/export($|[/?#])|/download($|[/?#])|/dump($|[/?#]))'
-        scan_url_pattern "$report_file" "$url" "LOW: version/control metadata" '(/\.git($|/)|/\.svn($|/)|/\.hg($|/)|/composer\.(json|lock)($|[?#])|/package-lock\.json($|[?#])|/yarn\.lock($|[?#])|/go\.sum($|[?#]))'
-    done < "$urls_file"
+    scan_url_file_pattern "$report_file" "$urls_file" "HIGH: environment/config file" '(\.env($|[?#])|/\.env($|[?#])|/config\.(json|ya?ml|xml|ini|php|bak|old)($|[?#])|/settings\.(json|ya?ml|xml|ini)($|[?#]))'
+    scan_url_file_pattern "$report_file" "$urls_file" "HIGH: backup/archive/database dump" '(\.bak($|[?#])|\.backup($|[?#])|\.old($|[?#])|\.orig($|[?#])|\.save($|[?#])|\.swp($|[?#])|\.zip($|[?#])|\.tar($|[?#])|\.tar\.gz($|[?#])|\.tgz($|[?#])|\.7z($|[?#])|\.rar($|[?#])|\.sql($|[?#])|\.db($|[?#])|\.sqlite($|[?#]))'
+    scan_url_file_pattern "$report_file" "$urls_file" "HIGH: credential/token in URL" '([?&](api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|client[_-]?secret|password|passwd|pwd|jwt|session|sid)=([^&#]{8,}))'
+    scan_url_file_pattern "$report_file" "$urls_file" "HIGH: private key/certificate path" '(\.pem($|[?#])|\.key($|[?#])|\.p12($|[?#])|\.pfx($|[?#])|id_rsa($|[?#])|id_dsa($|[?#]))'
+    scan_url_file_pattern "$report_file" "$urls_file" "MEDIUM: source map disclosure" '(\.map($|[?#])|sourceMappingURL=)'
+    scan_url_file_pattern "$report_file" "$urls_file" "MEDIUM: logs/debug/trace" '(/logs?/|\.log($|[?#])|/debug($|[/?#])|/trace($|[/?#])|/profiler($|[/?#])|/phpinfo\.php($|[?#])|/server-status($|[/?#])|/actuator($|[/?#]))'
+    scan_url_file_pattern "$report_file" "$urls_file" "MEDIUM: API docs/schema exposure" '(/swagger($|[/?#])|/swagger-ui($|[/?#])|/api-docs($|[/?#])|/openapi\.(json|ya?ml)($|[?#])|/graphql($|[/?#])|/graphiql($|[/?#]))'
+    scan_url_file_pattern "$report_file" "$urls_file" "MEDIUM: admin/internal/dev endpoint" '(/admin($|[/?#])|/internal($|[/?#])|/private($|[/?#])|/dev($|[/?#])|/staging($|[/?#])|/test($|[/?#])|/qa($|[/?#])|/beta($|[/?#]))'
+    scan_url_file_pattern "$report_file" "$urls_file" "MEDIUM: possible open redirect parameter" '([?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=https?%3A%2F%2F|[?&](next|url|redirect|redirect_uri|redirect_url|return|returnUrl|return_url|callback|continue|dest|destination)=https?://)'
+    scan_url_file_pattern "$report_file" "$urls_file" "LOW: interesting document/export" '(\.csv($|[?#])|\.xlsx?($|[?#])|\.docx?($|[?#])|\.pdf($|[?#])|/export($|[/?#])|/download($|[/?#])|/dump($|[/?#]))'
+    scan_url_file_pattern "$report_file" "$urls_file" "LOW: version/control metadata" '(/\.git($|/)|/\.svn($|/)|/\.hg($|/)|/composer\.(json|lock)($|[?#])|/package-lock\.json($|[?#])|/yarn\.lock($|[?#])|/go\.sum($|[?#]))'
 
     if [ -s "$report_file" ]; then
         success "URL info-disclosure indicators saved to $report_file"
@@ -782,16 +844,12 @@ scan_smart_url_findings() {
     fi
 
     step "Running smart URL filter for sensitive files and secret patterns"
-    while IFS= read -r url; do
-        [ -z "$url" ] && continue
+    scan_smart_url_file_pattern "$sensitive_file" "$urls_file" "Sensitive file extension" '\.(zip|rar|tar|gz|tgz|7z|config|conf|ini|log|bak|backup|old|orig|save|swp|java|xlsx?|json|pdf|docx?|pptx|csv|htaccess|env|sql|db|sqlite|pem|key|p12|pfx)([?#].*)?$'
+    scan_smart_url_file_pattern "$sensitive_file" "$urls_file" "Sensitive path keyword" '/(backup|backups|dump|dumps|export|exports|download|downloads|logs?|debug|config|configs|private|internal|admin|staging|dev|test|qa)(/|$|[?#])'
 
-        scan_smart_url_pattern "$sensitive_file" "$url" "Sensitive file extension" '\.(zip|rar|tar|gz|tgz|7z|config|conf|ini|log|bak|backup|old|orig|save|swp|java|xlsx?|json|pdf|docx?|pptx|csv|htaccess|env|sql|db|sqlite|pem|key|p12|pfx)([?#].*)?$'
-        scan_smart_url_pattern "$sensitive_file" "$url" "Sensitive path keyword" '/(backup|backups|dump|dumps|export|exports|download|downloads|logs?|debug|config|configs|private|internal|admin|staging|dev|test|qa)(/|$|[?#])'
-
-        scan_smart_url_pattern "$secret_file" "$url" "Secret keyword in URL" '(access[_-]?key|access[_-]?token|admin[_-]?(pass|user)|algolia[_-]?(admin[_-]?key|api[_-]?key)|api[_-]?(key|secret)|apikey|apiSecret|app[_-]?(debug|id|key|secret)|auth[_-]?(token|secret)|authorizationToken|aws[_-]?(access|access[_-]?key[_-]?id|bucket|key|secret|secret[_-]?key|token)|AWSSecretKey|client[_-]?secret|cloudflare[_-]?(api[_-]?key|auth[_-]?key)|cloudinary[_-]?api[_-]?secret|connectionstring|consumer[_-]?(key|secret)|credentials|database[_-]?(password|username)|db[_-]?(password|passwd|user|username)|deploy[_-]?password|docker[_-]?(key|pass|passwd|password)|encryption[_-]?(key|password)|firebase|googlemaps|AIza|jwt|private[_-]?key|secret|token)'
-        scan_smart_url_pattern "$secret_file" "$url" "Secret value in query string" '([?&](access[_-]?key|access[_-]?token|api[_-]?key|apikey|apiSecret|api[_-]?secret|app[_-]?key|app[_-]?secret|auth[_-]?token|client[_-]?secret|password|passwd|pwd|secret|token|jwt|session|sid)=([^&#]{8,}))'
-        scan_smart_url_pattern "$secret_file" "$url" "Cloud or SaaS secret indicator" '(amazonaws|appspot|cloudfront|firebaseio|storage\.googleapis\.com|supabase\.co|blob\.core\.windows\.net|s3\.amazonaws\.com|cloudinary|sendgrid|mailgun|twilio|stripe|slack|discord|github|gitlab|datadog|newrelic|sentry)'
-    done < "$urls_file"
+    scan_smart_url_file_pattern "$secret_file" "$urls_file" "Secret keyword in URL" '(access[_-]?key|access[_-]?token|admin[_-]?(pass|user)|algolia[_-]?(admin[_-]?key|api[_-]?key)|api[_-]?(key|secret)|apikey|apiSecret|app[_-]?(debug|id|key|secret)|auth[_-]?(token|secret)|authorizationToken|aws[_-]?(access|access[_-]?key[_-]?id|bucket|key|secret|secret[_-]?key|token)|AWSSecretKey|client[_-]?secret|cloudflare[_-]?(api[_-]?key|auth[_-]?key)|cloudinary[_-]?api[_-]?secret|connectionstring|consumer[_-]?(key|secret)|credentials|database[_-]?(password|username)|db[_-]?(password|passwd|user|username)|deploy[_-]?password|docker[_-]?(key|pass|passwd|password)|encryption[_-]?(key|password)|firebase|googlemaps|AIza|jwt|private[_-]?key|secret|token)'
+    scan_smart_url_file_pattern "$secret_file" "$urls_file" "Secret value in query string" '([?&](access[_-]?key|access[_-]?token|api[_-]?key|apikey|apiSecret|api[_-]?secret|app[_-]?key|app[_-]?secret|auth[_-]?token|client[_-]?secret|password|passwd|pwd|secret|token|jwt|session|sid)=([^&#]{8,}))'
+    scan_smart_url_file_pattern "$secret_file" "$urls_file" "Cloud or SaaS secret indicator" '(amazonaws|appspot|cloudfront|firebaseio|storage\.googleapis\.com|supabase\.co|blob\.core\.windows\.net|s3\.amazonaws\.com|cloudinary|sendgrid|mailgun|twilio|stripe|slack|discord|github|gitlab|datadog|newrelic|sentry)'
 
     close_json_report "$sensitive_file"
     close_json_report "$secret_file"
@@ -802,13 +860,18 @@ scan_smart_url_findings() {
     success "Potential vulnerability URLs saved to $potential_file"
 }
 
-scan_smart_url_pattern() {
+# Single-pass replacement: one grep over the whole file finds matching URLs,
+# then we only iterate the (small) set of matches to derive the match value and
+# record the JSON finding + candidate URL.
+scan_smart_url_file_pattern() {
     output_file="$1"
-    url="$2"
+    urls_file="$2"
     label="$3"
     pattern="$4"
 
-    printf '%s\n' "$url" | grep -Eio -- "$pattern" | head -n "$MAX_MATCHES_PER_PATTERN" | while IFS= read -r match_value; do
+    grep -Ei -- "$pattern" "$urls_file" 2>/dev/null | while IFS= read -r url; do
+        [ -z "$url" ] && continue
+        match_value=$(printf '%s\n' "$url" | grep -Eio -- "$pattern" | head -n 1)
         printf '%s\n' "$url" >> potential_vuln_urls.txt
         append_url_json_finding "$output_file" "$label" "$url" "$match_value"
     done
@@ -819,8 +882,12 @@ append_url_json_finding() {
     finding_type="$2"
     source_url="$3"
     match_value="$4"
+    # match_length/sha256 describe the ORIGINAL value; the stored strings are
+    # redacted so query-string secret values are never written in the clear.
     match_length=$(printf '%s' "$match_value" | wc -c | tr -d ' ')
     match_hash=$(hash_match "$match_value")
+    safe_source_url=$(redact_query_secrets "$source_url")
+    safe_match=$(redact_query_secrets "$match_value")
 
     if [ "$(wc -c < "$output_file" | tr -d ' ')" -gt 2 ]; then
         printf ',\n' >> "$output_file"
@@ -828,11 +895,17 @@ append_url_json_finding() {
 
     printf '  {\n' >> "$output_file"
     printf '    "type": "%s",\n' "$(json_escape "$finding_type")" >> "$output_file"
-    printf '    "source_url": "%s",\n' "$(json_escape "$source_url")" >> "$output_file"
+    printf '    "source_url": "%s",\n' "$(json_escape "$safe_source_url")" >> "$output_file"
     printf '    "match_length": %s,\n' "$match_length" >> "$output_file"
     printf '    "match_sha256": "%s",\n' "$match_hash" >> "$output_file"
-    printf '    "match": "%s"\n' "$(json_escape "$match_value")" >> "$output_file"
+    printf '    "match": "%s"\n' "$(json_escape "$safe_match")" >> "$output_file"
     printf '  }' >> "$output_file"
+}
+
+# Mask the VALUES of known-sensitive query params while keeping the URL usable
+# as a locator. Keyword-only matches (no "=value") pass through unchanged.
+redact_query_secrets() {
+    printf '%s' "$1" | sed -E 's/([?&](access[_-]?key|access[_-]?token|api[_-]?key|apikey|api[_-]?secret|app[_-]?key|app[_-]?secret|auth[_-]?token|client[_-]?secret|password|passwd|pwd|secret|token|jwt|session|sid)=)[^&#]*/\1[redacted]/gI'
 }
 
 write_smart_url_filter_dictionary() {
@@ -847,13 +920,16 @@ Cloud or SaaS secret indicator | amazonaws, appspot, cloudfront, firebaseio, sto
 EOF
 }
 
-scan_url_pattern() {
+# Single-pass replacement for the old per-URL loop: one grep over the whole file
+# per pattern instead of N greps per URL. awk -v keeps arbitrary label text safe.
+scan_url_file_pattern() {
     output_file="$1"
-    url="$2"
+    urls_file="$2"
     label="$3"
     pattern="$4"
 
-    printf '%s\n' "$url" | grep -Eiq -- "$pattern" && printf '[%s] %s\n' "$label" "$url" >> "$output_file"
+    grep -Ei -- "$pattern" "$urls_file" 2>/dev/null \
+        | awk -v lbl="[$label]" '{ print lbl " " $0 }' >> "$output_file"
 }
 
 write_url_regex_dictionary() {
@@ -935,12 +1011,17 @@ run_ai_triage() {
         openai)
             run_openai_triage "$domain" || warn "OpenAI triage failed; kept local AI summary."
             ;;
+        deepseek)
+            run_deepseek_triage "$domain" || warn "DeepSeek triage failed; kept local AI summary."
+            ;;
         ollama|local)
             run_ollama_triage "$domain" || warn "Ollama triage failed; kept local AI summary."
             ;;
         auto)
             if [ -n "$OPENAI_API_KEY" ]; then
                 run_openai_triage "$domain" || warn "OpenAI triage failed; kept local AI summary."
+            elif [ -n "$DEEPSEEK_API_KEY" ]; then
+                run_deepseek_triage "$domain" || warn "DeepSeek triage failed; kept local AI summary."
             elif command -v ollama >/dev/null 2>&1; then
                 run_ollama_triage "$domain" || warn "Ollama triage failed; kept local AI summary."
             else
@@ -1240,7 +1321,7 @@ run_openai_triage() {
     step "Running OpenAI triage with $OPENAI_MODEL"
     build_openai_payload "$domain" "reports/ai/ai_context.json" "reports/ai/ai_openai_request.json"
 
-    if ! curl -fsS https://api.openai.com/v1/responses \
+    if ! curl -fsS "$OPENAI_BASE_URL/responses" \
         -H "Authorization: Bearer $OPENAI_API_KEY" \
         -H "Content-Type: application/json" \
         -d @reports/ai/ai_openai_request.json \
@@ -1378,6 +1459,111 @@ with open(output_file, "w", encoding="utf-8") as handle:
 PY
 }
 
+# DeepSeek (and any OpenAI-compatible chat/completions endpoint). Set
+# DEEPSEEK_API_KEY, pick the model with --ai-model or DEEPSEEK_MODEL (default
+# deepseek-chat; deepseek-reasoner also works), and point DEEPSEEK_BASE_URL at a
+# different compatible provider if desired.
+run_deepseek_triage() {
+    domain="$1"
+
+    if [ -z "$DEEPSEEK_API_KEY" ]; then
+        warn "DEEPSEEK_API_KEY is not set. Skipping DeepSeek triage."
+        return 1
+    fi
+
+    step "Running DeepSeek triage with $DEEPSEEK_MODEL"
+    build_chat_payload "$domain" "reports/ai/ai_context.json" "reports/ai/ai_deepseek_request.json" "$DEEPSEEK_MODEL"
+
+    if ! curl -fsS "$DEEPSEEK_BASE_URL/chat/completions" \
+        -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d @reports/ai/ai_deepseek_request.json \
+        -o reports/ai/ai_deepseek_response.json; then
+        return 1
+    fi
+
+    extract_chat_text "reports/ai/ai_deepseek_response.json" "reports/ai/ai_summary.md"
+    success "DeepSeek triage saved to reports/ai/ai_summary.md"
+}
+
+# Build an OpenAI-style chat/completions request from the sanitized context.
+build_chat_payload() {
+    domain="$1"
+    context_file="$2"
+    output_file="$3"
+    model="$4"
+
+    python3 - "$domain" "$context_file" "$output_file" "$model" << 'PY'
+import json
+import sys
+
+domain, context_file, output_file, model = sys.argv[1:5]
+
+with open(context_file, "r", encoding="utf-8") as handle:
+    context = json.load(handle)
+
+system_prompt = (
+    "You are a security triage assistant for an authorized recon scan. "
+    "Use only the sanitized JSON provided. Do not invent findings and do not "
+    "suggest exploitation beyond safe manual reproduction."
+)
+
+user_prompt = f"""Triage this authorized recon scan for {domain}. Produce a concise Markdown report with:
+1. Executive summary
+2. Top confirmed findings ranked by severity
+3. Likely false positives or weak leads
+4. Duplicate/root-cause grouping
+5. Manual reproduction checklist
+6. Report-ready wording for the highest-impact confirmed issues
+
+Sanitized context:
+{json.dumps(context, indent=2)}
+"""
+
+payload = {
+    "model": model,
+    "messages": [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ],
+    "stream": False,
+    "temperature": 0.2,
+    "max_tokens": 2500,
+}
+
+with open(output_file, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+    handle.write("\n")
+PY
+}
+
+# Extract assistant text from an OpenAI-style chat/completions response.
+extract_chat_text() {
+    response_file="$1"
+    output_file="$2"
+
+    python3 - "$response_file" "$output_file" << 'PY'
+import json
+import sys
+
+response_file, output_file = sys.argv[1:3]
+with open(response_file, "r", encoding="utf-8", errors="ignore") as handle:
+    data = json.load(handle)
+
+text = ""
+try:
+    text = data["choices"][0]["message"]["content"]
+except Exception:
+    text = ""
+
+if not text and data.get("error"):
+    text = "# ReconRaptor AI Triage Failed\n\n" + json.dumps(data["error"], indent=2)
+
+with open(output_file, "w", encoding="utf-8") as handle:
+    handle.write((text or "").strip() + "\n")
+PY
+}
+
 organize_output() {
     mkdir -p raw reports/findings reports/urls reports/js reports/pd reports/candidates evidence
 
@@ -1407,7 +1593,15 @@ organize_output() {
 
     [ -f downloaded_js_map.txt ] && mv -f downloaded_js_map.txt evidence/downloaded_js_map.txt
     [ -d downloaded_js ] && mv -f downloaded_js evidence/downloaded_js
-    [ -d validator_tmp ] && mv -f validator_tmp evidence/validator_tmp
+
+    # validator_tmp holds raw HTTP responses/headers captured during validation,
+    # which may contain sensitive body content. Discard by default; keep only
+    # when the operator explicitly asks (KEEP_EVIDENCE=true / --keep-evidence).
+    if [ "$KEEP_EVIDENCE" = "true" ]; then
+        [ -d validator_tmp ] && mv -f validator_tmp evidence/validator_tmp
+    else
+        rm -rf validator_tmp
+    fi
 }
 
 write_result_index() {
@@ -1540,6 +1734,13 @@ recon() {
     subfinder -d "$1" -silent > subdomains.txt
     success "Saved $(count_lines subdomains.txt) subdomains to subdomains.txt"
 
+    if [ -n "$EXCLUDE_FILE" ] && [ -s "$EXCLUDE_FILE" ]; then
+        step "Applying scope exclusions from $EXCLUDE_FILE"
+        grep -Evi -f "$EXCLUDE_FILE" subdomains.txt > subdomains.scoped.txt 2>/dev/null
+        mv -f subdomains.scoped.txt subdomains.txt
+        success "$(count_lines subdomains.txt) subdomains remain after exclusions"
+    fi
+
     step "Resolving subdomains with dnsx"
     dnsx -l subdomains.txt -retry 1 -silent > resolved_subdomains.txt
     if [ ! -s resolved_subdomains.txt ]; then
@@ -1549,12 +1750,23 @@ recon() {
     success "Saved $(count_lines resolved_subdomains.txt) resolved subdomains to resolved_subdomains.txt"
 
     step "Checking live domains"
-    cat resolved_subdomains.txt | httpx -silent -threads 50 -mc 200 > authsubs.txt
+    # FIX: A host is "live" if it responds on http/https at all -- including 301/302
+    # (redirects) and 401/403 (auth/WAF/CDN), which are live and often the most
+    # interesting. The old check used "-mc 200", which dropped every WAF/CDN-protected
+    # or redirecting host and left redirecting hosts out of BOTH authsubs.txt and
+    # unauthsubs.txt -- the cause of "zero live hosts" on targets behind Cloudflare, etc.
+    # A browser User-Agent avoids WAFs 403ing the default httpx UA.
+    RR_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    cat resolved_subdomains.txt | httpx -silent -threads 50 -follow-redirects -H "User-Agent: ${RR_UA}" > authsubs.txt
     success "Saved $(count_lines authsubs.txt) live domains to authsubs.txt"
 
-    step "Checking non-live domains"
-    cat resolved_subdomains.txt | httpx -silent -threads 50 -mc 400,401,402,403,404 > unauthsubs.txt
-    success "Saved $(count_lines unauthsubs.txt) non-live domains to unauthsubs.txt"
+    step "Recording unreachable domains"
+    # Non-live = resolved but returned no HTTP(S) response at all (not merely non-200).
+    comm -23 \
+        <(sort -u resolved_subdomains.txt) \
+        <(sed -E 's#^https?://##; s#[:/].*$##' authsubs.txt | sort -u) \
+        > unauthsubs.txt
+    success "Saved $(count_lines unauthsubs.txt) unreachable domains to unauthsubs.txt"
     
     LINE_COUNT=$(wc -l < "authsubs.txt")
     if [ "$LINE_COUNT" -gt 20 ]; then
@@ -1566,6 +1778,11 @@ recon() {
     section "Historical URLs"
     step "Fetching wayback URLs from live domains"
     cat authsubs.txt | waybackurls > urls.txt
+
+    if command -v gau >/dev/null 2>&1; then
+        step "Fetching URLs with gau"
+        sed -E 's#^https?://##; s#[:/].*$##' authsubs.txt | sort -u | gau --threads 5 >> urls.txt 2>/dev/null || warn "gau completed with warnings."
+    fi
 
     step "Crawling live domains with katana"
     katana -list authsubs.txt -c 20 -d 2 -silent >> urls.txt
@@ -1626,6 +1843,7 @@ upload_discord() {
         return 1
     fi
 
+    warn "The archive may contain sensitive recon data (URLs, headers, JS). Share only via a trusted webhook."
     step "Compressing $result_dir"
     zip -qr "$zip_file" "$result_dir"
 
@@ -1649,14 +1867,21 @@ usage() {
     printf '  %-30s %s\n' '-d, --domain <domain>' 'Target domain to scan'
     printf '  %-30s %s\n' '-w, --webhook <url>' 'Upload the final zip to Discord'
     printf '  %-30s %s\n' '--ai' 'Enable AI-powered triage'
-    printf '  %-30s %s\n' '--ai-provider <mode>' 'auto, openai, ollama, or rules'
-    printf '  %-30s %s\n' '--ai-model <model>' 'Model name for OpenAI or Ollama'
+    printf '  %-30s %s\n' '--ai-provider <mode>' 'auto, openai, deepseek, ollama, or rules'
+    printf '  %-30s %s\n' '--ai-model <model>' 'Model name for OpenAI, DeepSeek, or Ollama'
+    printf '  %-30s %s\n' '--exclude-file <file>' 'Drop subdomains matching these regexes (out of scope)'
+    printf '  %-30s %s\n' '--keep-evidence' 'Keep raw validator HTTP responses under evidence/'
+    printf '  %-30s %s\n' '-h, --help' 'Show this help screen'
+    printf '\n%bEnvironment%b\n' "$BOLD" "$RESET"
+    printf '  %-30s %s\n' 'OPENAI_API_KEY=...' 'API key for --ai-provider openai'
+    printf '  %-30s %s\n' 'DEEPSEEK_API_KEY=...' 'API key for --ai-provider deepseek'
+    printf '  %-30s %s\n' 'DEEPSEEK_BASE_URL=...' 'Override DeepSeek/compatible endpoint (default https://api.deepseek.com)'
     printf '  %-30s %s\n' 'NUCLEI_TEMPLATE_TAGS=...' 'Override curated Nuclei template tags'
     printf '  %-30s %s\n' 'NUCLEI_AUTOMATIC_SCAN=false' 'Disable technology-mapped Nuclei scan'
-    printf '  %-30s %s\n' '-h, --help' 'Show this help screen'
     printf '\n%bExamples%b\n' "$BOLD" "$RESET"
     printf '  %s -d example.com\n' "$0"
     printf '  %s -d example.com --ai --ai-provider ollama --ai-model llama3.2:3b\n' "$0"
+    printf '  DEEPSEEK_API_KEY=sk-... %s -d example.com --ai --ai-provider deepseek --ai-model deepseek-chat\n' "$0"
 }
 
 # Args parsing
@@ -1688,6 +1913,16 @@ while [ "$#" -gt 0 ]; do
         if [ -z "${2:-}" ]; then usage; exit 1; fi
         OPENAI_MODEL="$2"
         OLLAMA_MODEL="$2"
+        DEEPSEEK_MODEL="$2"
+        shift 2
+        ;;
+    --keep-evidence)
+        KEEP_EVIDENCE="true"
+        shift
+        ;;
+    --exclude-file)
+        if [ -z "${2:-}" ]; then usage; exit 1; fi
+        EXCLUDE_FILE="$2"
         shift 2
         ;;
     -h|--help)
@@ -1713,6 +1948,19 @@ fi
 banner
 check_installed
 start_dir=$(pwd)
+
+# recon() changes into recon_<domain>/, so resolve a relative exclude file now.
+if [ -n "$EXCLUDE_FILE" ]; then
+    case "$EXCLUDE_FILE" in
+        /*) : ;;
+        *) EXCLUDE_FILE="$start_dir/$EXCLUDE_FILE" ;;
+    esac
+    if [ ! -s "$EXCLUDE_FILE" ]; then
+        warn "Exclude file '$EXCLUDE_FILE' is missing or empty; continuing without scope exclusions."
+        EXCLUDE_FILE=""
+    fi
+fi
+
 recon "$domain"
 cd "$start_dir" || exit 1
 
