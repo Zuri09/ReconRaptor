@@ -1,3 +1,4 @@
 *.zip
 *.log
 recon_*/
+.DS_Store
