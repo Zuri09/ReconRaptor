@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/pre_submit_guard.py",
+            "timeout": 30,
+            "statusMessage": "Checking triage verdict"
+          }
+        ]
+      }
+    ]
+  }
+}
